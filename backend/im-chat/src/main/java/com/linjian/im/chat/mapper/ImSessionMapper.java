@@ -27,9 +27,9 @@ public interface ImSessionMapper extends BaseMapper<ImSession> {
      */
     @Insert("""
             INSERT IGNORE INTO im_session
-                (id, session_type, biz_key, last_msg_seq, last_msg_at, last_msg_preview, created_at)
+                (id, session_type, name, biz_key, last_msg_seq, last_msg_at, last_msg_preview, created_at)
             VALUES
-                (#{id}, #{sessionType}, #{bizKey}, 0, NULL, NULL, NOW())
+                (#{id}, #{sessionType}, #{name}, #{bizKey}, 0, NULL, NULL, NOW())
             """)
     int insertIgnore(ImSession session);
 
@@ -80,4 +80,45 @@ public interface ImSessionMapper extends BaseMapper<ImSession> {
              WHERE m.user_id = #{userId}
             """)
     long countByUser(@Param("userId") Long userId);
+
+    /**
+     * 批量取每个会话的成员数。
+     *
+     * <p>群聊会话列表要显示「N 人」，逐条 count 就是 N+1；一次 GROUP BY 把
+     * N 次查询压成 1 次。走 {@code im_session_member} 的主键前缀（session_id 在最左），
+     * 每个会话是一次索引范围扫描，不回表。</p>
+     */
+    @Select("""
+            <script>
+            SELECT session_id AS sessionId, COUNT(*) AS memberCount
+              FROM im_session_member
+             WHERE session_id IN
+             <foreach collection="sessionIds" item="sid" open="(" separator="," close=")">
+               #{sid}
+             </foreach>
+             GROUP BY session_id
+            </script>
+            """)
+    List<MemberCountRow> countMembers(@Param("sessionIds") List<Long> sessionIds);
+
+    class MemberCountRow {
+        private Long sessionId;
+        private Integer memberCount;
+
+        public Long getSessionId() {
+            return sessionId;
+        }
+
+        public void setSessionId(Long sessionId) {
+            this.sessionId = sessionId;
+        }
+
+        public Integer getMemberCount() {
+            return memberCount;
+        }
+
+        public void setMemberCount(Integer memberCount) {
+            this.memberCount = memberCount;
+        }
+    }
 }

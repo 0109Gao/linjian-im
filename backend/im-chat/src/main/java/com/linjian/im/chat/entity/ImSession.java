@@ -8,7 +8,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 /**
- * 会话。单聊与群聊共用一张表，用 {@code sessionType} 区分，W7 只产生 1（单聊）。
+ * 会话。单聊与群聊共用一张表，用 {@code sessionType} 区分。
  *
  * <p>{@code bizKey} 只在单聊时非空，值为「较小 userId : 较大 userId」。
  * 把「谁和谁」编码成一个可加唯一索引的字符串，是为了让「两个人同时点开对方」
@@ -29,6 +29,9 @@ public class ImSession {
     private Long id;
 
     private Integer sessionType;
+
+    /** 群名。单聊为 null——单聊的展示名来自对方昵称，不属于会话自身的属性。 */
+    private String name;
 
     private String bizKey;
 

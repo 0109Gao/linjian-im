@@ -18,10 +18,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -146,5 +150,121 @@ class SessionServiceTest {
         when(memberMapper.exists(1L, 100L)).thenReturn(1);
         sessionService.assertMember(1L, 100L);
         verify(sessionMapper, never()).selectById(anyLong());
+    }
+
+    // ------------------------------------------------------------------
+    // 群聊
+    // ------------------------------------------------------------------
+
+    private ImSession groupSession(long id) {
+        ImSession s = new ImSession();
+        s.setId(id);
+        s.setSessionType(ImSession.TYPE_GROUP);
+        return s;
+    }
+
+    @Test
+    @DisplayName("建群：创建者自动入群，成员由一条批量 INSERT 写入")
+    void createGroupBatchesMembers() {
+        when(idGenerator.nextId()).thenReturn(7001L);
+        when(userMapper.selectBatchIds(any()))
+                .thenReturn(List.of(enabledUser(201L, "乙"), enabledUser(202L, "丙")));
+
+        // 群名带首尾空白，重复成员 201 只应出现一次
+        Long sessionId = sessionService.createGroup(100L, "  产品讨论组  ", List.of(201L, 202L, 201L));
+
+        assertThat(sessionId).isEqualTo(7001L);
+
+        ArgumentCaptor<ImSession> sessionCaptor = ArgumentCaptor.forClass(ImSession.class);
+        verify(sessionMapper).insertIgnore(sessionCaptor.capture());
+        assertThat(sessionCaptor.getValue().getSessionType()).isEqualTo(ImSession.TYPE_GROUP);
+        assertThat(sessionCaptor.getValue().getName()).isEqualTo("产品讨论组");
+        // 群聊没有 bizKey：靠 NULL 让唯一索引放过，群与群之间不会冲突
+        assertThat(sessionCaptor.getValue().getBizKey()).isNull();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Long>> memberCaptor = ArgumentCaptor.forClass(List.class);
+        verify(memberMapper).insertBatch(eq(7001L), memberCaptor.capture());
+        assertThat(memberCaptor.getValue()).containsExactly(100L, 201L, 202L);
+    }
+
+    @Test
+    @DisplayName("群名长度按码点算：64 个 emoji 合法，65 个被拒")
+    void groupNameCountsCodePoints() {
+        when(idGenerator.nextId()).thenReturn(7002L);
+        when(userMapper.selectBatchIds(any())).thenReturn(List.of(enabledUser(201L, "乙")));
+
+        // String.length() 会把 64 个 emoji 算成 128，用 @Size 或 length() 判就会误杀
+        assertThat("😀".repeat(64).length()).isEqualTo(128);
+        Long sessionId = sessionService.createGroup(100L, "😀".repeat(64), List.of(201L));
+        assertThat(sessionId).isEqualTo(7002L);
+
+        assertThatThrownBy(() -> sessionService.createGroup(100L, "😀".repeat(65), List.of(201L)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("不能超过");
+    }
+
+    @Test
+    @DisplayName("只邀请自己、或超过 200 人，都在写库之前被拒")
+    void createGroupRejectsBadMemberList() {
+        assertThatThrownBy(() -> sessionService.createGroup(100L, "独角戏", List.of(100L)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("至少要邀请一个成员");
+
+        List<Long> tooMany = new ArrayList<>();
+        for (long i = 0; i < 200; i++) {
+            tooMany.add(3000L + i);
+        }
+        assertThatThrownBy(() -> sessionService.createGroup(100L, "大群", tooMany))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("上限");
+
+        verify(sessionMapper, never()).insertIgnore(any());
+    }
+
+    @Test
+    @DisplayName("含不存在或已禁用的用户时整批拒绝，不建半个群")
+    void createGroupRejectsDisabledUser() {
+        ImUser disabled = enabledUser(202L, "丙");
+        disabled.setStatus(0);
+        when(userMapper.selectBatchIds(any())).thenReturn(List.of(enabledUser(201L, "乙"), disabled));
+
+        assertThatThrownBy(() -> sessionService.createGroup(100L, "群", List.of(201L, 202L)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("1 个用户");
+
+        verify(sessionMapper, never()).insertIgnore(any());
+    }
+
+    @Test
+    @DisplayName("拉人：已在群里的静默跳过，返回值是实际新增数")
+    void addMembersSkipsExisting() {
+        when(sessionMapper.selectById(50L)).thenReturn(groupSession(50L));
+        when(memberMapper.exists(50L, 100L)).thenReturn(1);
+        when(memberMapper.listUserIds(50L)).thenReturn(List.of(100L, 201L));
+        when(userMapper.selectBatchIds(any())).thenReturn(List.of(enabledUser(202L, "丙")));
+
+        int added = sessionService.addMembers(100L, 50L, List.of(201L, 202L, 202L));
+
+        assertThat(added).isEqualTo(1);
+        verify(memberMapper).insertBatch(50L, List.of(202L));
+    }
+
+    @Test
+    @DisplayName("单聊不能拉人、不能退群：报「不是群聊」而不是 404")
+    void groupOnlyOperationsRejectSingleChat() {
+        ImSession single = new ImSession();
+        single.setId(60L);
+        single.setSessionType(ImSession.TYPE_SINGLE);
+        when(sessionMapper.selectById(60L)).thenReturn(single);
+
+        assertThatThrownBy(() -> sessionService.addMembers(100L, 60L, List.of(201L)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("不是群聊");
+        assertThatThrownBy(() -> sessionService.leaveGroup(100L, 60L))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("不是群聊");
+
+        verify(memberMapper, never()).delete(anyLong(), anyLong());
     }
 }

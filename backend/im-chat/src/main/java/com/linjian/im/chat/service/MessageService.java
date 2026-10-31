@@ -6,6 +6,7 @@ import com.linjian.im.chat.dto.SendCommand;
 import com.linjian.im.chat.dto.SendResult;
 import com.linjian.im.chat.entity.ImInbox;
 import com.linjian.im.chat.entity.ImMessage;
+import com.linjian.im.chat.entity.ImSession;
 import com.linjian.im.chat.mapper.ImInboxMapper;
 import com.linjian.im.chat.mapper.ImMessageMapper;
 import com.linjian.im.chat.mapper.ImSessionMapper;
@@ -123,21 +124,31 @@ public class MessageService {
     }
 
     /**
-     * 投递：所有非发送者成员都写一行未读，在线的同时实时推送。
+     * 投递。两条路，按会话类型分：
      *
-     * <p><b>这里偏离了技术方案的「只给离线成员写收件箱」。</b>原因是那个策略有一个
-     * 明确的功能缺陷：用户在线但没打开这个会话时，消息只是「推到了连接上」，
-     * 并不等于「人看过了」。若在线不写收件箱，未读数永远是 0，红点不会亮——
-     * 而红点正是 IM 最核心的一个交互信号。</p>
+     * <ul>
+     *   <li><b>单聊</b>：给非发送者写未读行，然后给<i>所有</i>在线成员逐个推
+     *       {@code /user/queue/message}。发送者自己也推——多端场景下他的其他设备
+     *       必须知道这条消息，否则那台设备要等下次拉取才看得到。</li>
+     *   <li><b>群聊</b>：未读行照样写（消息进哪个群由成员表决定，与在线无关），
+     *       但推送改成向 {@code /topic/session.{id}} 广播一次。200 人群逐个推意味着
+     *       200 次序列化 + 200 次 Redis 在线判断；广播天然只送给「连着且订阅了」的人，
+     *       在线判断这一步直接消失。</li>
+     * </ul>
      *
-     * <p>代价是每条消息多一次 INSERT 和一次已读时的 DELETE。在单机 MySQL 上
-     * 这个代价远小于「未读数不准」带来的功能错误。</p>
+     * <p><b>为什么所有成员都写未读行（包括在线的）：</b>「推到了连接上」不等于
+     * 「人看过了」。用户在线但没打开这个会话时，消息只是躺在连接里，若不写未读行，
+     * 未读数永远是 0，红点不会亮。代价是每条消息多一次批量 INSERT（一条 SQL），
+     * 换来的是未读数始终准确——而红点是 IM 最核心的交互信号。</p>
      *
-     * <p>发送者自己不写收件箱，也不推送：W7 不做多端同步，发送者以本地乐观插入为准。
-     * W8 做多端时这里要改成「除当前 session 外推给该用户的其他 session」。</p>
+     * <p><b>发送者不写未读行：</b>自己发的消息不该给自己亮红点。但推送照给，
+     * 客户端按 {@code clientMsgId} 把服务端回推和自己本地那条乐观插入认成同一条，
+     * 用服务端返回的 seq 覆盖本地的临时值。</p>
      */
     private void deliver(Long sessionId, Long senderId, MessageView view) {
         List<Long> members = memberMapper.listUserIds(sessionId);
+
+        List<ImInbox> rows = new ArrayList<>(members.size());
         for (Long memberId : members) {
             if (memberId.equals(senderId)) {
                 continue;
@@ -147,12 +158,35 @@ public class MessageService {
             inbox.setUserId(memberId);
             inbox.setSessionId(sessionId);
             inbox.setSeq(view.seq());
-            inboxMapper.insertIgnore(inbox);
+            rows.add(inbox);
+        }
+        if (!rows.isEmpty()) {
+            inboxMapper.insertBatch(rows);
+        }
 
+        if (isGroup(sessionId)) {
+            delivery.deliverToSession(sessionId, view);
+            return;
+        }
+        for (Long memberId : members) {
             if (presenceService.isOnline(memberId)) {
                 delivery.deliverToUser(memberId, view);
             }
         }
+    }
+
+    /**
+     * 会话类型只在这里用一次，因此不缓存、也不放进 SendCommand。
+     *
+     * <p>一次主键查询（走聚簇索引，命中 buffer pool 后是纯内存操作）换掉群聊路径上
+     * 200 次 Redis 在线判断，这笔账很清楚。查不到会话时按单聊处理——那种情况
+     * 只会出现在会话被并发删除的窗口里，走点对点推送至少不会丢消息。</p>
+     */
+    private boolean isGroup(Long sessionId) {
+        ImSession session = sessionMapper.selectById(sessionId);
+        return session != null
+                && session.getSessionType() != null
+                && session.getSessionType() == ImSession.TYPE_GROUP;
     }
 
     /**

@@ -2,6 +2,7 @@ package com.linjian.im.web.config;
 
 import com.linjian.im.security.HandshakeAuthInterceptor;
 import com.linjian.im.security.StompAuthChannelInterceptor;
+import com.linjian.im.web.ws.GroupTopicAuthInterceptor;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -16,12 +17,14 @@ import org.springframework.web.socket.config.annotation.WebSocketTransportRegist
 /**
  * STOMP 端点与消息代理配置。
  *
- * <p>三个关键点：</p>
+ * <p>四个关键点：</p>
  * <ol>
  *   <li>使用 SimpleBroker（内存代理）而非真实 MQ：单机 IM 的推送在进程内完成，
  *       引入 RabbitMQ 只会多一跳网络，收益要等到做多节点广播时才会出现。</li>
  *   <li>心跳 10 秒双向。心跳由服务端配置生效，客户端在 CONNECT 时确认接收。</li>
  *   <li>CONNECT 帧的鉴权挂在 inbound 通道最前端，先于任何业务处理。</li>
+ *   <li>SUBSCRIBE 帧的群成员校验紧随其后。SimpleBroker 对 {@code /topic} 不做 ACL，
+ *       没有这一步，任何登录用户猜到 sessionId 就能收走整个群的消息。</li>
  * </ol>
  */
 @Configuration
@@ -31,6 +34,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private final HandshakeAuthInterceptor handshakeAuthInterceptor;
     private final StompAuthChannelInterceptor stompAuthChannelInterceptor;
+    private final GroupTopicAuthInterceptor groupTopicAuthInterceptor;
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
@@ -55,7 +59,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(stompAuthChannelInterceptor);
+        // 顺序有意义：先验签建立 Principal，再判断这个 Principal 能不能订阅该群。
+        // 反过来的话订阅校验拿到的 user 是 null，所有群订阅都会被拒。
+        registration.interceptors(stompAuthChannelInterceptor, groupTopicAuthInterceptor);
     }
 
     @Override

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS `im_session`
 (
     `id`               BIGINT      NOT NULL COMMENT '雪花 ID',
     `session_type`     TINYINT     NOT NULL DEFAULT 1 COMMENT '1 单聊 / 2 群聊',
+    `name`             VARCHAR(64) DEFAULT NULL COMMENT '群名；单聊为 NULL（单聊没有名字，展示靠对方昵称）',
     `biz_key`          VARCHAR(64) DEFAULT NULL COMMENT '单聊：min(uid):max(uid)；群聊：NULL',
     `last_msg_seq`     BIGINT      NOT NULL DEFAULT 0 COMMENT '会话内最后一条消息的 seq，0 表示尚无消息',
     `last_msg_at`      DATETIME(3) DEFAULT NULL COMMENT '最后一条消息时间，会话列表按它倒序',
@@ -93,8 +94,11 @@ CREATE TABLE IF NOT EXISTS `im_message`
   COLLATE = utf8mb4_general_ci COMMENT ='消息';
 
 -- ------------------------------------------------------------
--- 离线收件箱。语义是「该用户当前未读的消息引用集合」，不是投递队列。
--- 在线用户不写本表，推送到达即视为已读；离线用户每条消息写一行。
+-- 未读收件箱。语义是「该用户当前未读的消息引用集合」，不是投递队列。
+-- 注意：在线用户同样写本表。W7 实现时偏离了最初「只给离线用户写」的设计，
+-- 因为「推到连接上」不等于「人看过了」——在线但没打开会话时若不写，未读数永远是 0，
+-- 红点不会亮。代价是每条消息多一次 INSERT，换来的是未读数始终准确。
+-- 发送者自己不写（自己的消息不该给自己亮红点）。
 -- 用户上报已读时 DELETE seq <= lastReadSeq 的行，因此
 --   未读数 = COUNT(*) WHERE user_id = ? AND session_id = ?
 -- 一条走唯一索引前缀的查询就能算准，且不受 seq 空洞影响。
@@ -115,9 +119,11 @@ CREATE TABLE IF NOT EXISTS `im_inbox`
   COLLATE = utf8mb4_general_ci COMMENT ='离线未读收件箱';
 
 -- ------------------------------------------------------------
--- 已读游标。W7 只到「用户」维度，没有 device_type。
--- 原因是 W6 的 STOMP CONNECT 帧里没有可靠的设备标识来源，强行加一个
--- 客户端自报的 device_type 等于造一个不可信维度。W8 做多端同步时再扩字段。
+-- 已读游标。维度是「用户」，没有 device_type——这是 W8 重新确认过的取舍，不是遗漏。
+-- 加设备维度会直接产生「手机已读、电脑仍亮红点」这种反直觉状态；
+-- 且 W6 的 CONNECT 帧里没有可信的设备标识来源，只能让客户端自报，
+-- 等于造一个可以随便填的维度。多端同步改用「已读事件广播给本人其他连接」实现：
+-- 一端上报已读，服务端把结果推到 /user/queue/read，其他端据此清红点。
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `im_read_cursor`
 (

@@ -131,7 +131,8 @@ class W7RealtimeIT {
         assertThat(received.path("seq").asLong()).isEqualTo(seq);
         assertThat(received.path("senderId").asLong()).isEqualTo(USER_A);
 
-        // 发送方不应该收到自己那条推送（W7 不做多端同步）
+        // B 不应收到重复推送（同一条消息只推一次）
+        // 注意：W8 起发送者自己也会收到推送（多端同步），那条断言在 W8GroupIT 里
         assertThat(bInbox.poll(500, TimeUnit.MILLISECONDS)).isNull();
 
         // 在线用户同样要落未读：推送到达 ≠ 用户已读

@@ -15,6 +15,10 @@ import org.springframework.transaction.annotation.Transactional;
  * 发消息丢了客户端能靠 ack 超时发现并重发，而已读上报在 STOMP 上是发出去就不管
  * （SimpleBroker 没有投递回执），丢了没有任何信号，用户表现为「红点不消」。
  * REST 至少有状态码可以重试，也能被前端统一拦截处理。</p>
+ *
+ * <p><b>为什么读完成功后还要再推一次（W8）：</b>已读游标是按「人」存的，不按设备。
+ * 手机上报已读后，电脑那端的红点只能靠这条推送消失——否则要等下一次拉取才会更新。
+ * 上报的那台设备也会收到这个事件，客户端按 sessionId + lastReadSeq 幂等处理即可。</p>
  */
 @Slf4j
 @Service
@@ -24,6 +28,7 @@ public class ReadService {
     private final ImReadCursorMapper cursorMapper;
     private final ImInboxMapper inboxMapper;
     private final SessionService sessionService;
+    private final MessageDelivery delivery;
 
     /**
      * 上报已读到 {@code lastReadSeq}，并删掉收件箱里对应的未读行。
@@ -40,6 +45,12 @@ public class ReadService {
         long unread = inboxMapper.countUnread(userId, sessionId);
         log.debug("已读上报 sessionId={} userId={} lastReadSeq={} 清除未读={} 剩余={}",
                 sessionId, userId, lastReadSeq, deleted, unread);
-        return new ReadResult(sessionId, lastReadSeq, unread);
+
+        ReadResult result = new ReadResult(sessionId, lastReadSeq, unread);
+        // 事务内推送：这不是「消息通知」，而是「我自己的状态变了」。
+        // 即使事务随后回滚，其他端多清了一次红点也会在下次拉取时被真实未读数纠正，
+        // 不会造成不可恢复的不一致。
+        delivery.deliverReadToUser(userId, result);
+        return result;
     }
 }

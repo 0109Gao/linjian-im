@@ -2,7 +2,9 @@ package com.linjian.im.chat.service;
 
 import com.linjian.im.chat.dto.SendCommand;
 import com.linjian.im.chat.dto.SendResult;
+import com.linjian.im.chat.entity.ImInbox;
 import com.linjian.im.chat.entity.ImMessage;
+import com.linjian.im.chat.entity.ImSession;
 import com.linjian.im.chat.mapper.ImInboxMapper;
 import com.linjian.im.chat.mapper.ImMessageMapper;
 import com.linjian.im.chat.mapper.ImSessionMapper;
@@ -14,6 +16,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -21,7 +24,9 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -34,12 +39,17 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 发送流程的分支覆盖。重点验证三件容易写错的事：
+ * 发送流程的分支覆盖。重点是三件容易写错的事：
  * <ol>
  *   <li>重发命中后<b>不能</b>再分配 seq（否则每次重发都烧一个号）</li>
  *   <li>重发返回的是<b>首次</b>的 seq，不是新分配的</li>
- *   <li>校验顺序：内容非法时不该走到查重与分配 seq</li>
+ *   <li>单聊与群聊的投递路径不同：一个逐个推，一个广播一次</li>
  * </ol>
+ *
+ * <p>W8 新增的两条断言值得单独说明：群聊路径<b>不应调用</b>
+ * {@code presenceService.isOnline}——广播天然只到活着的连接，逐个判断 200 次
+ * 正是这次改造要消灭的开销；单聊路径<b>要</b>推给发送者自己，否则他的第二台
+ * 设备永远不知道这条消息。</p>
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -72,10 +82,20 @@ class MessageServiceTest {
     private static final Long SENDER = 1001L;
     private static final Long PEER = 1002L;
     private static final Long SESSION = 9001L;
+    private static final Long GROUP = 9002L;
+
+    private final AtomicLong idSeq = new AtomicLong(500L);
 
     @BeforeEach
     void setUp() {
-        when(idGenerator.nextId()).thenReturn(555L, 556L, 557L);
+        when(idGenerator.nextId()).thenAnswer(inv -> idSeq.incrementAndGet());
+    }
+
+    private ImSession session(int type) {
+        ImSession s = new ImSession();
+        s.setId(type == ImSession.TYPE_GROUP ? GROUP : SESSION);
+        s.setSessionType(type);
+        return s;
     }
 
     @Test
@@ -86,6 +106,7 @@ class MessageServiceTest {
         existing.setSessionId(SESSION);
         existing.setSeq(42L);
         existing.setSenderId(SENDER);
+        existing.setClientMsgId("cid-1");
         existing.setContent("hello");
         existing.setCreatedAt(LocalDateTime.now());
         when(messageMapper.selectByClientMsgId(SENDER, "cid-1")).thenReturn(existing);
@@ -137,13 +158,15 @@ class MessageServiceTest {
     }
 
     @Test
-    @DisplayName("正常发送：分配 seq、落库、更新会话摘要、给对方写未读并推送")
-    void happyPath() {
+    @DisplayName("单聊：给对方写未读并推送，发送者也收到推送（多端）")
+    void singleChatPushesBothSides() {
         when(contentValidator.requireValid("hello")).thenReturn("hello");
         when(messageMapper.selectByClientMsgId(SENDER, "cid-4")).thenReturn(null);
         when(seqService.next(SESSION)).thenReturn(7L);
         when(memberMapper.listUserIds(SESSION)).thenReturn(List.of(SENDER, PEER));
+        when(sessionMapper.selectById(SESSION)).thenReturn(session(ImSession.TYPE_SINGLE));
         when(presenceService.isOnline(PEER)).thenReturn(true);
+        when(presenceService.isOnline(SENDER)).thenReturn(true);
 
         SendResult result = messageService.send(SENDER, new SendCommand(SESSION, "cid-4", "hello"));
 
@@ -153,25 +176,73 @@ class MessageServiceTest {
 
         verify(messageMapper).insert(any(ImMessage.class));
         verify(sessionMapper).touchLastMessage(eq(SESSION), eq(7L), any(LocalDateTime.class), eq("hello"));
-        // 对方：写一行未读 + 在线则推送
-        verify(inboxMapper).insertIgnore(any());
+        // 对方与发送者各推一次；发送者不写未读行（自己发的消息不该给自己亮红点）
         verify(delivery).deliverToUser(eq(PEER), any());
-        // 发送者自己：不写未读、不推送（W7 不做多端同步）
-        verify(delivery, never()).deliverToUser(eq(SENDER), any());
+        verify(delivery).deliverToUser(eq(SENDER), any());
+        verify(delivery, never()).deliverToSession(anyLong(), any());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ImInbox>> captor = ArgumentCaptor.forClass(List.class);
+        verify(inboxMapper).insertBatch(captor.capture());
+        assertThat(captor.getValue()).extracting(ImInbox::getUserId).containsExactly(PEER);
     }
 
     @Test
-    @DisplayName("对方离线：写未读但不推送")
+    @DisplayName("对方离线：照样写未读，但不推送")
     void offlinePeerGetsInboxOnly() {
         when(contentValidator.requireValid("hi")).thenReturn("hi");
         when(messageMapper.selectByClientMsgId(SENDER, "cid-5")).thenReturn(null);
         when(seqService.next(SESSION)).thenReturn(8L);
         when(memberMapper.listUserIds(SESSION)).thenReturn(List.of(SENDER, PEER));
+        when(sessionMapper.selectById(SESSION)).thenReturn(session(ImSession.TYPE_SINGLE));
         when(presenceService.isOnline(PEER)).thenReturn(false);
+        when(presenceService.isOnline(SENDER)).thenReturn(false);
 
         messageService.send(SENDER, new SendCommand(SESSION, "cid-5", "hi"));
 
-        verify(inboxMapper).insertIgnore(any());
+        verify(inboxMapper).insertBatch(any());
         verify(delivery, never()).deliverToUser(anyLong(), any());
+    }
+
+    @Test
+    @DisplayName("群聊：广播一次，不逐个推，也不查在线状态")
+    void groupChatBroadcastsOnce() {
+        when(contentValidator.requireValid("hi all")).thenReturn("hi all");
+        when(messageMapper.selectByClientMsgId(SENDER, "cid-g")).thenReturn(null);
+        when(seqService.next(GROUP)).thenReturn(9L);
+        when(memberMapper.listUserIds(GROUP)).thenReturn(List.of(SENDER, 2001L, 2002L, 2003L));
+        when(sessionMapper.selectById(GROUP)).thenReturn(session(ImSession.TYPE_GROUP));
+
+        messageService.send(SENDER, new SendCommand(GROUP, "cid-g", "hi all"));
+
+        verify(delivery).deliverToSession(eq(GROUP), any());
+        verify(delivery, never()).deliverToUser(anyLong(), any());
+        // 广播天然只到「连着且订阅了」的人，逐个查在线在这里是纯浪费
+        verify(presenceService, never()).isOnline(anyLong());
+    }
+
+    @Test
+    @DisplayName("200 人群：199 行未读走一条批量 INSERT，不是 199 次单插")
+    void groupInboxWrittenInOneBatch() {
+        List<Long> members = new ArrayList<>();
+        members.add(SENDER);
+        for (long i = 0; i < 199; i++) {
+            members.add(5000L + i);
+        }
+        when(contentValidator.requireValid("broadcast")).thenReturn("broadcast");
+        when(messageMapper.selectByClientMsgId(SENDER, "cid-200")).thenReturn(null);
+        when(seqService.next(GROUP)).thenReturn(10L);
+        when(memberMapper.listUserIds(GROUP)).thenReturn(members);
+        when(sessionMapper.selectById(GROUP)).thenReturn(session(ImSession.TYPE_GROUP));
+
+        messageService.send(SENDER, new SendCommand(GROUP, "cid-200", "broadcast"));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ImInbox>> captor = ArgumentCaptor.forClass(List.class);
+        verify(inboxMapper).insertBatch(captor.capture());
+        assertThat(captor.getValue()).hasSize(199);
+        assertThat(captor.getValue()).extracting(ImInbox::getUserId).doesNotContain(SENDER);
+        // 未读行的 seq 必须与被推送的消息一致，否则「已读清零」会删错范围
+        assertThat(captor.getValue()).allMatch(row -> row.getSeq().equals(10L));
     }
 }

@@ -15,17 +15,24 @@ import java.util.List;
 public interface ImInboxMapper extends BaseMapper<ImInbox> {
 
     /**
-     * 写入离线未读。
+     * 批量写入未读行。
+     *
+     * <p>一条 INSERT IGNORE ... VALUES (...),(...) 代替 N 次单条插入。200 人的群
+     * 发一条消息，用循环单插就是 200 次网络往返；批量是一条。</p>
      *
      * <p>用 INSERT IGNORE 而不是普通 INSERT：同一条消息对同一个用户重复投递时
      * （例如重试、或在线判定抖动导致既推了又写了），撞唯一键应当静默无操作，
-     * 而不是抛异常打断投递循环——一个人收不到不应该影响其他人收货。</p>
+     * 而不是抛异常打断投递——一个人收不到不应该影响其他人收货。</p>
      */
     @Insert("""
-            INSERT IGNORE INTO im_inbox (id, user_id, session_id, seq, created_at)
-            VALUES (#{id}, #{userId}, #{sessionId}, #{seq}, NOW())
+            <script>
+            INSERT IGNORE INTO im_inbox (id, user_id, session_id, seq, created_at) VALUES
+            <foreach collection="rows" item="r" separator=",">
+              (#{r.id}, #{r.userId}, #{r.sessionId}, #{r.seq}, NOW())
+            </foreach>
+            </script>
             """)
-    int insertIgnore(ImInbox inbox);
+    int insertBatch(@Param("rows") List<ImInbox> rows);
 
     /** 未读数。走 uk_user_session_seq 的最左前缀，不需要回表。 */
     @Select("SELECT COUNT(*) FROM im_inbox WHERE user_id = #{userId} AND session_id = #{sessionId}")

@@ -3,13 +3,18 @@ package com.linjian.im.chat.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 在线状态。
@@ -55,6 +60,48 @@ public class PresenceService {
     public boolean isOnline(Long userId) {
         Long size = redis.opsForSet().size(key(userId));
         return size != null && size > 0;
+    }
+
+    /**
+     * 批量判断在线，一次 pipeline 拿全部结果。
+     *
+     * <p>群成员列表要显示每个人的在线状态。逐个 {@link #isOnline} 调用在 200 人群
+     * 就是 200 次往返——这正是 W8 决定「群消息不做在线判断」的同一个理由，
+     * 只是成员列表无法回避「每个人都要一个状态」，于是改成一次 pipeline。</p>
+     *
+     * <p>用 {@code EXISTS} 而不是 {@code SCARD}：Redis 会在 Set 的最后一个成员被移除时
+     * 自动删掉键，因此「键存在」与「至少一个连接在线」等价，而 EXISTS 只需查键的元信息。</p>
+     */
+    public Set<Long> filterOnline(Collection<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Set.of();
+        }
+        List<Long> ids = new ArrayList<>(userIds);
+        List<Object> results = redis.executePipelined((RedisCallback<Object>) connection -> {
+            for (Long id : ids) {
+                connection.keyCommands().exists(key(id).getBytes(StandardCharsets.UTF_8));
+            }
+            return null;
+        });
+
+        Set<Long> online = new HashSet<>();
+        for (int i = 0; i < ids.size() && i < results.size(); i++) {
+            if (truthy(results.get(i))) {
+                online.add(ids.get(i));
+            }
+        }
+        return online;
+    }
+
+    /** pipeline 的结果类型随命令而定（EXISTS 可能回 Boolean，也可能回 Long），两种都认。 */
+    private static boolean truthy(Object value) {
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        if (value instanceof Number n) {
+            return n.longValue() > 0;
+        }
+        return false;
     }
 
     public long onlineSessionCount(Long userId) {
