@@ -440,8 +440,11 @@ export const useChatStore = defineStore('chat', {  state: () => ({
 
       const isMine = String(message.senderId) === me.userId
       if (sid === this.activeId) {
-        // 正在看这个会话：直接置已读，不亮红点
-        this.markRead(sid)
+        // 正在看这个会话：直接置已读，不亮红点。
+        // 必须带 force：上面的 handleIncoming 已经把 session.lastMsgSeq 更新成了新消息的 seq，
+        // 若走 markRead 的「已读到最新就跳过」判断，会把这个刚收到的消息误判成「已经读过」，
+        // 于是永远不上报——服务端游标不推进，同一账号的其它端红点不消，重连后还会闪一次假红点。
+        this.markRead(sid, true)
       } else if (!isMine && session) {
         session.unreadCount = (Number(session.unreadCount) || 0) + 1
       }
@@ -536,7 +539,14 @@ export const useChatStore = defineStore('chat', {  state: () => ({
       }
     },
 
-    async markRead(sessionId) {
+    /**
+     * 上报已读。
+     *
+     * @param force true 表示「刚收到一条新消息，无论本地怎么判断都必须上报」。
+     *              由 handleIncoming 传入：那条消息此刻就在用户眼前，服务端必须知道。
+     *              默认 false 保留「已读到最新就跳过」的优化，避免每次切会话都白打一次接口。
+     */
+    async markRead(sessionId, force = false) {
       const sid = String(sessionId)
       const list = this.messages[sid]
       if (!list || list.length === 0) {
@@ -549,7 +559,10 @@ export const useChatStore = defineStore('chat', {  state: () => ({
       const session = this.sessions.find((s) => s.sessionId === sid)
       // 已经读到最新且没有未读，就不必再打一次接口。
       // 这里不做「每秒一次」的自动上报：已读是用户动作的结果，不是定时任务的结果。
-      if (session
+      // 注意 lastMsgSeq 是「会话最后一条消息」，不是「我的已读位置」——两者会合流
+      // 的唯二情形是「没有未读」或「刚收到消息」，前者该跳过，后者由 force 兜住。
+      if (!force
+        && session
         && Number(session.lastMsgSeq || 0) <= Number(last.seq)
         && Number(session.unreadCount || 0) === 0) {
         return

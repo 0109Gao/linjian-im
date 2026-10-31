@@ -13,6 +13,7 @@ import com.linjian.im.common.id.SnowflakeIdGenerator;
 import com.linjian.im.security.JwtService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -87,7 +88,15 @@ public class UserService {
         // 如果这里接受请求里的 role，注册接口会变成一个「自助提权」入口。
         user.setRole(0);
         user.setCreatedAt(LocalDateTime.now());
-        userMapper.insert(user);
+        try {
+            userMapper.insert(user);
+        } catch (DuplicateKeyException e) {
+            // 并发注册同一个用户名：上面的查重通过后，另一个人抢先插入了。
+            // 数据库的唯一索引 uk_username 是最终裁决，这里把冲突翻译成「名字被占用」，
+            // 而不是让 DuplicateKeyException 落进兜底变成 5000 + ERROR 堆栈——
+            // 那会让一个正常的竞态被当成服务端故障报警。
+            throw new BusinessException(ErrorCode.USERNAME_TAKEN);
+        }
 
         log.info("新用户注册 userId={} username={}", user.getId(), user.getUsername());
         return toAuthResponse(user);

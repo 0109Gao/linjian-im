@@ -188,4 +188,23 @@ class UserServiceTest {
         assertThat(saved.getRole()).isZero();
         assertThat(resp.accessToken()).isEqualTo("token-new");
     }
+
+    @Test
+    @DisplayName("并发注册撞上唯一索引时，返回「名字被占用」而不是 5000")
+    void register_concurrentDuplicate_returnsUsernameTaken() {
+        // 查重那一步通过（selectOne 返回 null），但 insert 时另一个人抢先插入，
+        // 数据库唯一索引 uk_username 抛出 DuplicateKeyException。这里必须把它翻译成
+        // USERNAME_TAKEN，而不是让一个正常竞态落进兜底 handler 变成 5000 + ERROR 堆栈。
+        when(userMapper.selectOne(any())).thenReturn(null);
+        when(userMapper.insert(any())).thenThrow(new org.springframework.dao.DuplicateKeyException("uk_username"));
+
+        RegisterRequest req = new RegisterRequest();
+        req.setUsername("newcomer");
+        req.setPassword("abc123456");
+
+        assertThatThrownBy(() -> userService.register(req))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getErrorCode())
+                .isEqualTo(ErrorCode.USERNAME_TAKEN);
+    }
 }

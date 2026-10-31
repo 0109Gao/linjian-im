@@ -156,3 +156,67 @@ test('对方发来的消息能实时推到未打开的会话，并亮起未读�
     await ctxB.close()
   }
 })
+
+test('正在看的会话收到消息会立即上报已读，服务端不留未读', async ({ browser, request }) => {
+  const LINJIAN_ID = '109859320094527488'
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  const reader = await ctxA.newPage()
+  const sender = await ctxB.newPage()
+
+  try {
+    await loginUser(reader, 'demo')
+    await loginUser(sender, 'linjian')
+
+    // 读的一方打开与「林间」的单聊，触发 select→markRead，清掉历史未读
+    const peer = reader.locator('.session-list .item').filter({ hasText: '林间' }).first()
+    await expect(peer).toBeVisible()
+    await peer.click()
+    await expect(reader.locator('.chat-head .title')).toContainText('林间')
+    // 让初始的已读上报先落地，避免和测试消息的已读上报混在一起
+    await reader.waitForTimeout(400)
+
+    // 发的一方打开与 demo 的单聊，发一条
+    const sendPeer = sender.locator('.session-list .item').filter({ hasText: '演示用户' }).first()
+    await expect(sendPeer).toBeVisible()
+    await sendPeer.click()
+    const text = unique('已读')
+    await sender.locator('.composer textarea').fill(text)
+    await sender.getByRole('button', { name: '发送', exact: true }).click()
+    await expect(sender.locator('.bubble-row.mine .meta').last()).toHaveText(/#\d+/, {
+      timeout: 15_000
+    })
+
+    // 读的一方正在看这个会话，消息应实时出现在气泡里
+    await expect(reader.locator('.bubble-row').filter({ hasText: text })).toBeVisible({
+      timeout: 15_000
+    })
+
+    // 关键断言：reader 必须把服务端游标推进，否则未读一直是 1。
+    // 不能用 UI 断言——当前会话本来就不显示红点，红点只在「另一台设备」或「重连后」冒出来，
+    // 那正是这个 bug 最隐蔽的地方。所以直接拿 demo 的 token 查服务端会话列表的 unreadCount。
+    const login = await request.post('http://localhost:8083/api/auth/login', {
+      data: { username: 'demo', password: '123456' }
+    })
+    const token = (await login.json()).data.accessToken
+    let unread = -1
+    for (let i = 0; i < 50; i++) {
+      const res = await request.get('http://localhost:8083/api/sessions', {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      const items = (await res.json()).data.items || []
+      const sess = items.find((s) => String(s.peerUserId) === LINJIAN_ID)
+      if (sess) {
+        unread = Number(sess.unreadCount || 0)
+        if (unread === 0) {
+          break
+        }
+      }
+      await reader.waitForTimeout(100)
+    }
+    expect(unread).toBe(0)
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
