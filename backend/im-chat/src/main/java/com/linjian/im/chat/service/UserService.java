@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.linjian.im.chat.dto.AuthResponse;
 import com.linjian.im.chat.dto.LoginRequest;
 import com.linjian.im.chat.dto.RegisterRequest;
+import com.linjian.im.chat.dto.UserBrief;
 import com.linjian.im.chat.entity.ImUser;
 import com.linjian.im.chat.mapper.ImUserMapper;
 import com.linjian.im.common.api.ErrorCode;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Slf4j
@@ -93,6 +95,42 @@ public class UserService {
                 .eq(ImUser::getUsername, username)
                 .last("limit 1"));
     }
+
+    /**
+     * 按用户名或昵称搜索联系人。
+     *
+     * <p>W7 必须有这个接口：没有它，客户端拿到一个空的会话列表就无法发起第一个会话——
+     * 用户不可能凭空知道对方的 userId。这也是为什么它和「会话列表」一起被列进 W7
+     * 而不是留到前端阶段。</p>
+     *
+     * <p>只返回 status=1 的账号，且排除自己。limit 由服务端算成 int 后拼进 SQL，
+     * 不接受客户端传原始值，避免把分页参数变成注入面。</p>
+     */
+    public List<UserBrief> search(String keyword, Long selfId, int limit) {
+        String trimmed = keyword == null ? "" : keyword.trim();
+        if (trimmed.isEmpty()) {
+            return List.of();
+        }
+        // 用 final 变量给 lambda 捕获：前面若对 q 重新赋值，q 就不再是 effectively final，
+        // 编译期会直接拒绝。
+        final String q = trimmed.length() > 20 ? trimmed.substring(0, 20) : trimmed;
+        int safeLimit = Math.min(Math.max(limit, 1), 30);
+        List<ImUser> users = userMapper.selectList(Wrappers.<ImUser>lambdaQuery()
+                .eq(ImUser::getStatus, 1)
+                .ne(ImUser::getId, selfId)
+                .and(w -> w.like(ImUser::getUsername, q).or().like(ImUser::getNickname, q))
+                .last("limit " + safeLimit));
+        return users.stream()
+                .map(u -> new UserBrief(u.getId(), u.getUsername(), u.getNickname()))
+                .toList();
+    }
+
+    /** 取单个用户的对外信息，不存在返回 null（调用方自行决定是否当作错误）。 */
+    public UserBrief findBrief(Long id) {
+        ImUser user = userMapper.selectById(id);
+        return user == null ? null : new UserBrief(user.getId(), user.getUsername(), user.getNickname());
+    }
+
 
     private AuthResponse toAuthResponse(ImUser user) {
         String token = jwtService.issue(user.getId(), user.getUsername());

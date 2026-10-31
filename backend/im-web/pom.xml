@@ -34,6 +34,24 @@
     </dependencies>
 
     <build>
+        <!--
+            把项目根目录的 sql/schema.sql 也纳入 classpath。
+            目的只有一个：集成测试可以直接复用生产的那份 DDL 初始化 im_test 库，
+            而不是另维护一份「测试专用建表脚本」——两份脚本一定会漂移，
+            等到测试库和生产库结构不一致时，红灯指向的是一个不存在的问题。
+        -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <!-- im-web 位于 backend/im-web，项目根的 sql 目录要上溯两级 -->
+                <directory>${project.basedir}/../../sql</directory>
+                <includes>
+                    <include>schema.sql</include>
+                </includes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>

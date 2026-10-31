@@ -26,6 +26,7 @@ services:
       - "3307:3306"
     volumes:
       - im-mysql-data:/var/lib/mysql
+      - ../sql/00-create-test-db.sql:/docker-entrypoint-initdb.d/00-create-test-db.sql:ro
       - ../sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ../sql/seed-dev.sql:/docker-entrypoint-initdb.d/02-seed-dev.sql:ro
     healthcheck:
