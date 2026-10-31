@@ -17,7 +17,7 @@
 
       <div class="table-wrap">
         <el-table :data="rows" v-loading="loading" stripe>
-        <el-table-column prop="id" label="用户 ID" width="180">
+        <el-table-column prop="id" label="用户 ID" width="165">
           <template #default="{ row }">
             <span class="mono">{{ row.id }}</span>
           </template>

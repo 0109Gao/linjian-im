@@ -259,8 +259,20 @@ defineExpose({ scrollToBottom })
   outline: 1px solid var(--im-danger);
 }
 
+/*
+ * 这两个属性都必须显式写，缺任何一个都会出错，而且都不报错：
+ *
+ *   pre-wrap    —— 输入框支持 Shift+Enter 换行，消息内容里就有 \n。默认的
+ *                  white-space: normal 会把连续空白折叠，多行消息显示成一行。
+ *   break-word  —— 一长串没有空格的字符（URL、2000 个 a）默认不会在词内断行，
+ *                  会把气泡撑出容器边界，横向溢出到页面外。
+ *
+ * 管理端消息抽屉里这两个属性是有的，用户端漏了——同一份数据两处渲染，样式得各自写全。
+ */
 .text {
   display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .meta {

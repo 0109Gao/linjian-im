@@ -38,8 +38,21 @@ function bySeq(a, b) {
   return a.seq - b.seq
 }
 
-export const useChatStore = defineStore('chat', {
-  state: () => ({
+/**
+ * 发送超时。正常 ack 在 200ms 内回来，8 秒足够宽容；再长用户就会以为界面死了。
+ *
+ * 为什么必须有这个兜底：`stomp.sendMessage` 返回 true 只代表「帧交给了 WebSocket」，
+ * 不代表服务端收到了。如果帧在传输途中丢掉、而连接本身还没被心跳判定为断开，
+ * 这条消息就会永远停在 `sending`——转圈、点不了、也没有重试按钮。
+ * 重连补齐也救不了它：补齐是按 `afterSeq` 拉的，服务端根本没有这条消息。
+ */
+const SEND_TIMEOUT_MS = 8000
+
+/** clientMsgId → 定时器句柄。放模块作用域而不是 state：定时器句柄没有响应式的意义，
+ *  而且放进 state 会被 Pinia 深度追踪，属于纯粹的噪声。 */
+const sendTimers = new Map()
+
+export const useChatStore = defineStore('chat', {  state: () => ({
     sessions: [],
     activeId: null,
     /** sessionId → 消息数组（按 seq 升序，本地待确认的排在最后） */
@@ -303,12 +316,17 @@ export const useChatStore = defineStore('chat', {
       this.messages[sid].push(local)
       this.outbox[clientMsgId] = { sessionId: sid }
 
+
       const ok = stomp.sendMessage({ sessionId: sid, clientMsgId, content: text })
       if (!ok) {
         // 连接断了还让消息停在「发送中」，用户会一直等一个不会来的回执。
         // 直接标失败，并把重试按钮给他。
         local.status = 'failed'
         local.error = '连接已断开，请重试'
+        delete this.outbox[clientMsgId]
+      } else {
+        // 帧交出去了，但「交出去」不等于「对方收到」，必须挂一个超时兜底
+        this.armSendTimeout(clientMsgId)
       }
     },
 
@@ -328,7 +346,49 @@ export const useChatStore = defineStore('chat', {
       if (!ok) {
         message.status = 'failed'
         message.error = '连接已断开，请重试'
+        delete this.outbox[message.clientMsgId]
+      } else {
+        this.armSendTimeout(message.clientMsgId)
       }
+    },
+
+    /**
+     * 给一条「发送中」的消息挂上超时。ack 到了由 {@link disarmSendTimeout} 取消。
+     *
+     * 判定为超时后走 `markSendFailed` 而不是直接删消息：用户需要看到「这条没发出去」，
+     * 并且能点重试。静默删除是最坏的选择——用户以为发出去了，对方永远收不到。
+     */
+    armSendTimeout(clientMsgId) {
+      this.disarmSendTimeout(clientMsgId)
+      sendTimers.set(clientMsgId, setTimeout(() => {
+        sendTimers.delete(clientMsgId)
+        this.markSendFailed(clientMsgId, '发送超时，请重试')
+      }, SEND_TIMEOUT_MS))
+    },
+
+    disarmSendTimeout(clientMsgId) {
+      const handle = sendTimers.get(clientMsgId)
+      if (handle !== undefined) {
+        clearTimeout(handle)
+        sendTimers.delete(clientMsgId)
+      }
+    },
+
+    /** 把一条仍在 `sending` 的消息标成失败。已经是 sent / failed 的不动，避免覆盖真实结果。 */
+    markSendFailed(clientMsgId, reason) {
+      const meta = this.outbox[clientMsgId]
+      const sid = meta ? meta.sessionId : this.activeId
+      const list = sid ? this.messages[sid] : null
+      if (!list) {
+        return
+      }
+      const message = list.find((m) => m.clientMsgId === clientMsgId)
+      if (!message || message.status !== 'sending') {
+        return
+      }
+      message.status = 'failed'
+      message.error = reason
+      delete this.outbox[clientMsgId]
     },
 
     // ---------------------------------------------------------------- 收消息
@@ -409,6 +469,9 @@ export const useChatStore = defineStore('chat', {
       if (!ack || !ack.clientMsgId) {
         return
       }
+      // 回执一到就撤掉超时兜底：哪怕后面因为会话被切走而提前 return，
+      // 也不该再让 8 秒后的定时器把一条已经成功的消息改成「失败」。
+      this.disarmSendTimeout(ack.clientMsgId)
       const meta = this.outbox[ack.clientMsgId]
       const sid = meta ? meta.sessionId : this.activeId
       const list = sid ? this.messages[sid] : null
@@ -516,6 +579,9 @@ export const useChatStore = defineStore('chat', {
       this.initialized = false
       this.connection = 'idle'
       this.lastConnection = 'idle'
+      // 登出时把还在计时的超时全部撤掉：切账号后再触发，会把新账号的消息改错。
+      sendTimers.forEach((handle) => clearTimeout(handle))
+      sendTimers.clear()
       stomp.disconnect()
     }
   }

@@ -17,7 +17,7 @@
 
       <div class="table-wrap">
         <el-table :data="rows" v-loading="loading" stripe>
-        <el-table-column prop="id" label="会话 ID" width="200">
+        <el-table-column prop="id" label="会话 ID" width="165">
           <template #default="{ row }">
             <span class="mono">{{ row.id }}</span>
           </template>
@@ -29,7 +29,12 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="名称" width="160">
+        <!--
+          群名最长 64 个「字符」，而中文/emoji 的宽度是拉丁字母的两倍。
+          64 个 emoji 会把这一行撑到半屏高，整张表的节奏全乱。
+          show-overflow-tooltip 让超长名字截断成一行，鼠标悬停再看全文。
+        -->
+        <el-table-column label="名称" width="160" show-overflow-tooltip>
           <template #default="{ row }">
             {{ row.name || '—' }}
           </template>

@@ -75,9 +75,15 @@ onMounted(load)
 </script>
 
 <style scoped>
+/*
+ * 210px 在窄窗口下会退化成单列——侧边栏 190 + 内边距 48 之后，
+ * 662px 的窗口只剩 424px，而两列 210 + 210 + 14(gap) = 434，差 10px 挤不进去。
+ * 6 张卡片竖着排占满两屏，得滚动才能看完「概览」。降到 180 后 424px 能排两列，
+ * 宽屏下也不会挤：auto-fill 仍会按可用宽度铺满。
+ */
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 14px;
   margin-bottom: 16px;
 }
