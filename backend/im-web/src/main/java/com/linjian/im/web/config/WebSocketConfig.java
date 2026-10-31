@@ -2,6 +2,7 @@ package com.linjian.im.web.config;
 
 import com.linjian.im.security.HandshakeAuthInterceptor;
 import com.linjian.im.security.StompAuthChannelInterceptor;
+import com.linjian.im.web.ws.AccountStatusChannelInterceptor;
 import com.linjian.im.web.ws.GroupTopicAuthInterceptor;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
@@ -34,6 +35,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private final HandshakeAuthInterceptor handshakeAuthInterceptor;
     private final StompAuthChannelInterceptor stompAuthChannelInterceptor;
+    private final AccountStatusChannelInterceptor accountStatusChannelInterceptor;
     private final GroupTopicAuthInterceptor groupTopicAuthInterceptor;
 
     @Override
@@ -59,9 +61,14 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        // 顺序有意义：先验签建立 Principal，再判断这个 Principal 能不能订阅该群。
-        // 反过来的话订阅校验拿到的 user 是 null，所有群订阅都会被拒。
-        registration.interceptors(stompAuthChannelInterceptor, groupTopicAuthInterceptor);
+        // 顺序有意义，三道闸必须严格按这个次序：
+        //   1. 验签，把 Principal 绑到会话上（否则后面两道拿到的 user 是 null）
+        //   2. 查账号状态，被禁用的人不该继续发帧
+        //   3. 查群成员身份，非成员不该订阅该群主题
+        // 任何一道提前，都会让下一道基于空身份做判断，表现为「所有人都被拒」。
+        registration.interceptors(stompAuthChannelInterceptor,
+                accountStatusChannelInterceptor,
+                groupTopicAuthInterceptor);
     }
 
     @Override

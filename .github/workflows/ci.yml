@@ -1,0 +1,108 @@
+name: CI
+
+# 只在主分支与 PR 上跑。日常提交到临时分支不触发，避免把免费额度花在
+# 「推一版改一版」的中间状态上——那种提交本来就还会再改。
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+# 同一个分支连续推送时取消上一轮：等待中的那一轮跑的代码已经过期了，
+# 让它继续跑完只是白占 runner。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端 · 编译 + 单测 + 集成测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # 集成测试连的是 127.0.0.1:3307 / 6380，端口在 application-test.yml 里写死，
+    # 所以这里用端口映射把服务容器搬到同样的端口，测试配置一个字都不用改。
+    # 把端口挪成「CI 专用」而不是改测试配置，是为了让本地与 CI 跑的是同一份配置。
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: im_test
+          MYSQL_USER: im
+          MYSQL_PASSWORD: im123456
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+
+      # verify 而不是 test：failsafe 的集成测试（W5..W9）挂在 verify 阶段，
+      # 只跑 test 会漏掉全部「真实起服务 + 真实连库」的用例，而那才是这个项目的重点。
+      - name: mvn verify
+        working-directory: backend
+        run: mvn -B -ntp verify
+
+      - name: 汇总测试结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-reports
+          path: |
+            backend/**/target/surefire-reports/*.txt
+            backend/**/target/failsafe-reports/*.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  frontend:
+    name: 前端 · ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [frontend-user, frontend-admin]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+
+      # ci 而不是 install：它严格按 lockfile 装，不会偷偷把某个依赖升一个小版本，
+      # 从而导致「本地能跑、CI 挂」这种最难查的问题。
+      - name: npm ci
+        working-directory: ${{ matrix.app }}
+        run: npm ci
+
+      # 构建同时起到了「模板语法检查」的作用：Vue 的模板错误是编译期报的，
+      # 没有 ESLint 也能被 build 拦住。
+      - name: npm run build
+        working-directory: ${{ matrix.app }}
+        run: npm run build

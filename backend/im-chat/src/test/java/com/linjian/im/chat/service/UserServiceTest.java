@@ -22,6 +22,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
@@ -66,7 +67,7 @@ class UserServiceTest {
     @DisplayName("密码正确时应签发 token，且返回的 userId 为字符串")
     void login_success() {
         when(userMapper.selectOne(any())).thenReturn(existingUser);
-        when(jwtService.issue(anyLong(), anyString())).thenReturn("token-abc");
+        when(jwtService.issue(anyLong(), anyString(), anyInt())).thenReturn("token-abc");
         when(jwtService.getExpireHours()).thenReturn(24L);
 
         LoginRequest req = new LoginRequest();
@@ -78,7 +79,10 @@ class UserServiceTest {
         assertThat(resp.accessToken()).isEqualTo("token-abc");
         assertThat(resp.userId()).isEqualTo("109859320094527488");
         assertThat(resp.nickname()).isEqualTo("林间");
-        verify(jwtService).issue(109859320094527488L, "linjian");
+        // 登录响应必须带上角色：前端靠它决定进 5175 还是 5176。
+        // existingUser 没有显式设置 role，这里同时验证了「role 为 null 时按普通用户处理」。
+        assertThat(resp.role()).isZero();
+        verify(jwtService).issue(109859320094527488L, "linjian", 0);
     }
 
     @Test
@@ -163,7 +167,7 @@ class UserServiceTest {
     void register_success_storesHashNotPlaintext() {
         when(userMapper.selectOne(any())).thenReturn(null);
         when(idGenerator.nextId()).thenReturn(109859320094527490L);
-        when(jwtService.issue(anyLong(), anyString())).thenReturn("token-new");
+        when(jwtService.issue(anyLong(), anyString(), anyInt())).thenReturn("token-new");
         when(jwtService.getExpireHours()).thenReturn(24L);
 
         RegisterRequest req = new RegisterRequest();
@@ -180,6 +184,8 @@ class UserServiceTest {
         assertThat(encoder.matches("abc123456", saved.getPasswordHash())).isTrue();
         assertThat(saved.getNickname()).isEqualTo("newcomer");
         assertThat(saved.getStatus()).isEqualTo(1);
+        // 注册一律给普通用户：若这里允许请求决定 role，注册接口就是一条自助提权通道。
+        assertThat(saved.getRole()).isZero();
         assertThat(resp.accessToken()).isEqualTo("token-new");
     }
 }

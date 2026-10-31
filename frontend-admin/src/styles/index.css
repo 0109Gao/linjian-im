@@ -1,0 +1,93 @@
+:root {
+  --ad-primary: #3370ff;
+  --ad-sidebar: #1f2733;
+  --ad-sidebar-active: #2b3547;
+  --ad-text: #1f2329;
+  --ad-text-sub: #646a73;
+  --ad-text-weak: #8f959e;
+  --ad-border: #ebedf0;
+  --ad-bg: #f5f6f7;
+
+  --el-color-primary: #3370ff;
+  --el-color-primary-light-3: #6690ff;
+  --el-color-primary-light-5: #99b5ff;
+  --el-color-primary-light-7: #ccd9ff;
+  --el-color-primary-light-8: #e0e8ff;
+  --el-color-primary-light-9: #eef3ff;
+  --el-color-primary-dark-2: #2a5bd7;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  color: var(--ad-text);
+  background: var(--ad-bg);
+  font-size: 14px;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d9dbe0;
+  border-radius: 4px;
+}
+
+.page {
+  padding: 20px;
+}
+
+.card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 18px;
+  border: 1px solid var(--ad-border);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  /* 窄窗口下允许换行：不加会在「搜索 / 刷新」这里挤成重叠或溢出卡片 */
+  flex-wrap: wrap;
+}
+
+.toolbar .grow {
+  flex: 1;
+}
+
+/*
+ * 表格横向滚动兜底。
+ *
+ * 管理端的表格有 7~8 列，列宽合计约 1000~1100px。窗口窄于这个宽度时，el-table 自身
+ * 的横向滚动条在部分环境（触控板 / 无横向滚轮的鼠标）下摸不到，右侧「状态 / 操作」列
+ * 就成了「看不见也点不到」。
+ *
+ * 这里把表格的最小宽度设成略大于列宽合计：此时 el-table 内部不再溢出（不会出现第二条
+ * 滚动条），横向滚动完全由外层 .table-wrap 承担，行为是确定的。
+ * 窗口够宽时 width:100% 照常拉伸，不受影响。
+ */
+.table-wrap {
+  overflow-x: auto;
+}
+
+.table-wrap .el-table {
+  min-width: 1140px;
+}

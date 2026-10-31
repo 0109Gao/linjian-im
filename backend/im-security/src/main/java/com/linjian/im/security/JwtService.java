@@ -33,12 +33,18 @@ public class JwtService {
         this.key = Keys.hmacShaKeyFor(properties.getSecret().getBytes(StandardCharsets.UTF_8));
     }
 
+    /** 签发普通用户 token。等价于 {@code issue(userId, username, 0)}。 */
     public String issue(long userId, String username) {
+        return issue(userId, username, JwtUser.ROLE_USER);
+    }
+
+    public String issue(long userId, String username, int role) {
         Instant now = Instant.now();
         Instant expiry = now.plus(Duration.ofHours(properties.getExpireHours()));
         return Jwts.builder()
                 .subject(String.valueOf(userId))
                 .claim("username", username)
+                .claim("role", role)
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))
                 // 显式指定 HS384：若不指定，jjwt 会按密钥长度自动挑选算法，
@@ -61,7 +67,10 @@ public class JwtService {
                 .getPayload();
         long userId = Long.parseLong(claims.getSubject());
         String username = claims.get("username", String.class);
-        return new JwtUser(userId, username);
+        // 旧 token（W8 及之前签发）没有 role claim。这里按普通用户处理而不是按管理员：
+        // 缺失字段时选择权限更小的那一侧，是唯一不会因为「忘了处理」而放大权限的选法。
+        Integer role = claims.get("role", Integer.class);
+        return new JwtUser(userId, username, role == null ? JwtUser.ROLE_USER : role);
     }
 
     public long getExpireHours() {

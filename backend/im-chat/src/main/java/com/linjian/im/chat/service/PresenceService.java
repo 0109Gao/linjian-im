@@ -144,6 +144,33 @@ public class PresenceService {
         return keys.size();
     }
 
+    /**
+     * 列出当前所有在线用户，供管理端监控页使用。
+     *
+     * <p>这是本项目里唯一一处「不知道具体键名、只能扫全库」的读操作。用 SCAN 而不是
+     * KEYS：后者会一次性阻塞整个 Redis，在键数增长时会拖垮所有正在收消息的连接，
+     * 而这只是管理端一个展示页面。</p>
+     *
+     * <p>返回的是「有在线键的用户」，与 {@link #isOnline} 口径一致（键存在即在线）。
+     * 单实例部署下这就是准确值；多实例部署时仍成立，因为键本身不带实例标识。</p>
+     */
+    public List<Long> listOnlineUserIds() {
+        List<Long> ids = new ArrayList<>();
+        ScanOptions options = ScanOptions.scanOptions().match(KEY_PREFIX + "*").count(500).build();
+        try (Cursor<String> cursor = redis.scan(options)) {
+            while (cursor.hasNext()) {
+                String suffix = cursor.next().substring(KEY_PREFIX.length());
+                try {
+                    ids.add(Long.parseLong(suffix));
+                } catch (NumberFormatException ignored) {
+                    // 键名不是「前缀 + 数字」时跳过。人工在 Redis 里留下的测试键
+                    // 不该让整个在线列表报错。
+                }
+            }
+        }
+        return ids;
+    }
+
     private String key(Long userId) {
         return KEY_PREFIX + userId;
     }

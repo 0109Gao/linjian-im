@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Mapper
@@ -58,4 +59,19 @@ public interface ImMessageMapper extends BaseMapper<ImMessage> {
             """)
     ImMessage selectByClientMsgId(@Param("senderId") Long senderId,
                                   @Param("clientMsgId") String clientMsgId);
+
+    /**
+     * 管理端概览用的总数。
+     *
+     * <p>这是唯一一个注定会随数据量线性变慢的查询：{@code COUNT(*)} 在 InnoDB 上
+     * 没有缓存值可用，必须扫一遍最小的那个索引。30 万行实测几十毫秒（见
+     * {@code docs/性能验证.md}），对「管理员打开首页看一个数字」这个场景足够；
+     * 如果哪天不够，正确的做法是改成定时任务算好写进一张统计表，
+     * 而不是加缓存——统计值本来就不需要精确到秒。</p>
+     */
+    @Select("SELECT COUNT(*) FROM im_message")
+    long countAll();
+
+    @Select("SELECT COUNT(*) FROM im_message WHERE created_at >= #{from}")
+    long countSince(@Param("from") LocalDateTime from);
 }

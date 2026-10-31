@@ -82,6 +82,46 @@ public interface ImSessionMapper extends BaseMapper<ImSession> {
     long countByUser(@Param("userId") Long userId);
 
     /**
+     * 管理端的会话分页：全部会话，不按当前用户过滤。
+     *
+     * <p>关键字同时匹配群名和会话 ID 的字符串形式。后者是刻意加的：
+     * 管理员往往是从一条消息审计记录里拿到 sessionId，再回头看这个会话是什么，
+     * 此时唯一能用的检索条件就是 ID 本身。</p>
+     */
+    @Select("""
+            <script>
+            SELECT * FROM im_session
+            <where>
+                <if test="keyword != null and keyword != ''">
+                    (name LIKE CONCAT('%', #{keyword}, '%')
+                     OR CAST(id AS CHAR) = #{keyword})
+                </if>
+            </where>
+            ORDER BY last_msg_at DESC, id DESC
+            LIMIT #{limit} OFFSET #{offset}
+            </script>
+            """)
+    List<ImSession> selectPageForAdmin(@Param("keyword") String keyword,
+                                       @Param("offset") int offset,
+                                       @Param("limit") int limit);
+
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM im_session
+            <where>
+                <if test="keyword != null and keyword != ''">
+                    (name LIKE CONCAT('%', #{keyword}, '%')
+                     OR CAST(id AS CHAR) = #{keyword})
+                </if>
+            </where>
+            </script>
+            """)
+    long countForAdmin(@Param("keyword") String keyword);
+
+    @Select("SELECT COUNT(*) FROM im_session WHERE session_type = 2")
+    long countGroups();
+
+    /**
      * 批量取每个会话的成员数。
      *
      * <p>群聊会话列表要显示「N 人」，逐条 count 就是 N+1；一次 GROUP BY 把

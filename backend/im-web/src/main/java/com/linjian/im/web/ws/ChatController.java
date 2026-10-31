@@ -32,17 +32,20 @@ public class ChatController {
     @SendToUser(value = "/queue/ack", broadcast = false)
     public SendResult send(@Payload SendCommand command, Principal principal) {
         if (principal == null) {
-            return SendResult.fail("未登录");
+            return SendResult.fail(null, "未登录");
         }
         Long senderId = Long.valueOf(principal.getName());
+        // 失败时把 clientMsgId 带回，前端才能定位到「是哪一条」失败了。
+        // command 本身可能为 null（帧体为空），因此要先判空再取。
+        String clientMsgId = command == null ? null : command.clientMsgId();
         try {
             return messageService.send(senderId, command);
         } catch (BusinessException e) {
             log.debug("消息发送被拒绝 sender={} 原因={}", senderId, e.getMessage());
-            return SendResult.fail(e.getMessage());
+            return SendResult.fail(clientMsgId, e.getMessage());
         } catch (RuntimeException e) {
             log.error("消息发送异常 sender={}", senderId, e);
-            return SendResult.fail("服务内部错误");
+            return SendResult.fail(clientMsgId, "服务内部错误");
         }
     }
 }

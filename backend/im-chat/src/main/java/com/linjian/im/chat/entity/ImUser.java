@@ -26,8 +26,11 @@ public class ImUser {
 
     private String nickname;
 
-    /** 1 正常 / 0 禁用。禁用状态不允许登录。 */
+    /** 1 正常 / 0 禁用。禁用状态不允许登录，且已发出的 token 会在下次请求时被拒。 */
     private Integer status;
+
+    /** 0 普通用户 / 1 管理员。管理员才能访问 /api/admin/**。 */
+    private Integer role;
 
     private LocalDateTime createdAt;
 }

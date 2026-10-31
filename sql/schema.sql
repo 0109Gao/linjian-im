@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS `im_user`
     `password_hash` VARCHAR(72)  NOT NULL COMMENT 'BCrypt 哈希，含盐，长度固定 60',
     `nickname`      VARCHAR(20)  NOT NULL COMMENT '展示名',
     `status`        TINYINT      NOT NULL DEFAULT 1 COMMENT '1 正常 / 0 禁用',
+    `role`          TINYINT      NOT NULL DEFAULT 0 COMMENT '0 普通用户 / 1 管理员（W9）',
     `created_at`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_username` (`username`)

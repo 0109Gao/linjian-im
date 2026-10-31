@@ -49,8 +49,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             String token = header.substring(BEARER_PREFIX.length()).trim();
             try {
                 JwtUser user = jwtService.parse(token);
+                // 角色映射成 Spring Security 的 authority，供 /api/admin/** 的
+                // hasRole("ADMIN") 判断。前缀 ROLE_ 是 Spring 的约定，少写会表现为
+                // 「明明是管理员却一直 403」，且没有任何日志提示原因。
                 var authentication = new UsernamePasswordAuthenticationToken(
-                        user, null, List.of(new SimpleGrantedAuthority("ROLE_USER")));
+                        user, null, List.of(new SimpleGrantedAuthority(
+                                user.isAdmin() ? "ROLE_ADMIN" : "ROLE_USER")));
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             } catch (JwtException | IllegalArgumentException e) {
                 SecurityContextHolder.clearContext();

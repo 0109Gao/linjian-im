@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linjian.im.common.api.ErrorCode;
 import com.linjian.im.common.api.Result;
 import com.linjian.im.security.JwtAuthenticationFilter;
+import com.linjian.im.web.security.AccountStatusFilter;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
@@ -19,6 +20,7 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -33,7 +35,16 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final AccountStatusFilter accountStatusFilter;
     private final ObjectMapper objectMapper;
+
+    /** 401 与 403 共用同一段写响应逻辑，避免两处各写一份、格式慢慢分裂。 */
+    private void writeJson(HttpServletResponse response, int httpStatus, ErrorCode code) throws IOException {
+        response.setStatus(httpStatus);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.setContentType("application/json;charset=UTF-8");
+        response.getWriter().write(objectMapper.writeValueAsString(Result.error(code)));
+    }
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -43,19 +54,26 @@ public class SecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/**", "/ws/**", "/error", "/actuator/health").permitAll()
+                        // 管理端接口：必须是 role=1 的账号。注意这里校验的是 token 里的角色，
+                        // 而 /api/admin/** 下每个方法仍会独立判断，不依赖「进了这个前缀就安全」。
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 // JWT 过滤器必须在 UsernamePasswordAuthenticationFilter 之前，
                 // 否则 Security 会先按「无认证信息」把它判成匿名请求。
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                // 账号状态闸排在 JWT 过滤器之后：先解出身份，再判断这个身份还能不能用。
+                .addFilterAfter(accountStatusFilter, JwtAuthenticationFilter.class)
                 // 未认证时输出与业务接口一致的结构，而不是 Security 默认的空 body 或 HTML 错误页。
                 // 前端拦截器因此只需要处理一种响应格式。
-                .exceptionHandling(e -> e.authenticationEntryPoint((request, response, ex) -> {
-                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-                    response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-                    response.setContentType("application/json;charset=UTF-8");
-                    response.getWriter().write(objectMapper.writeValueAsString(
-                            Result.error(ErrorCode.UNAUTHORIZED)));
-                }))
+                .exceptionHandling(e -> e
+                        .authenticationEntryPoint((request, response, ex) ->
+                                writeJson(response, HttpServletResponse.SC_UNAUTHORIZED,
+                                        ErrorCode.UNAUTHORIZED))
+                        // 401 与 403 必须分开：401 表示「重新登录可能有用」，403 表示
+                        // 「登录了也没用」。前端对前者跳登录页，对后者提示权限不足。
+                        .accessDeniedHandler((request, response, ex) ->
+                                writeJson(response, HttpServletResponse.SC_FORBIDDEN,
+                                        ErrorCode.FORBIDDEN)))
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .formLogin(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable);

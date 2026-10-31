@@ -83,6 +83,9 @@ public class UserService {
                 ? request.getUsername()
                 : request.getNickname().trim());
         user.setStatus(1);
+        // 注册接口一律给普通用户。管理员只能由 SQL 迁移或后台授予——
+        // 如果这里接受请求里的 role，注册接口会变成一个「自助提权」入口。
+        user.setRole(0);
         user.setCreatedAt(LocalDateTime.now());
         userMapper.insert(user);
 
@@ -133,12 +136,14 @@ public class UserService {
 
 
     private AuthResponse toAuthResponse(ImUser user) {
-        String token = jwtService.issue(user.getId(), user.getUsername());
+        int role = user.getRole() == null ? 0 : user.getRole();
+        String token = jwtService.issue(user.getId(), user.getUsername(), role);
         return new AuthResponse(
                 token,
                 String.valueOf(user.getId()),
                 user.getUsername(),
                 user.getNickname(),
+                role,
                 jwtService.getExpireHours()
         );
     }

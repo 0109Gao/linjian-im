@@ -1,0 +1,64 @@
+:root {
+  --im-primary: #3370ff;
+  --im-primary-dark: #2a5bd7;
+  --im-primary-light: #eef3ff;
+  --im-text: #1f2329;
+  --im-text-sub: #646a73;
+  --im-text-weak: #8f959e;
+  --im-border: #ebedf0;
+  --im-bg: #f5f6f7;
+  --im-panel: #ffffff;
+  --im-radius: 10px;
+  --im-danger: #f54a45;
+  --im-success: #34c724;
+
+  /* 与 Element Plus 的主色保持一致，避免「按钮是蓝的、标签是红的」 */
+  --el-color-primary: #3370ff;
+  --el-color-primary-light-3: #6690ff;
+  --el-color-primary-light-5: #99b5ff;
+  --el-color-primary-light-7: #ccd9ff;
+  --el-color-primary-light-8: #e0e8ff;
+  --el-color-primary-light-9: #eef3ff;
+  --el-color-primary-dark-2: #2a5bd7;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  color: var(--im-text);
+  background: var(--im-bg);
+  font-size: 14px;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+/* 滚动条收窄。聊天窗是长时间停留的界面，默认滚动条会一直占着一截宽度。 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d9dbe0;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #c2c5cc;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
