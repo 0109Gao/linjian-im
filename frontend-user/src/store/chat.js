@@ -39,6 +39,25 @@ function bySeq(a, b) {
 }
 
 /**
+ * 雪花 ID 倒序比较（大的在前）。
+ *
+ * <p>不能写成 <code>Number(b.id) - Number(a.id)</code>：雪花 ID 是 19 位，
+ * 超出 <code>Number.MAX_SAFE_INTEGER</code>（9007199254740991，16 位），
+ * <code>Number()</code> 会静默丢精度——<code>...432</code> 变成 <code>...430</code>。
+ * 两个只差 1~2 的 ID 转完就相等，比较器返回 0，同毫秒创建的两个会话顺序不再确定。</p>
+ *
+ * <p>改为字符串比较：位数多的一定更大，位数相同则字典序等于数值序。等价于补零对齐后比较，
+ * 但不用真的拼字符串。</p>
+ */
+function byIdDesc(a, b) {
+  const sa = a === null || a === undefined ? '' : String(a)
+  const sb = b === null || b === undefined ? '' : String(b)
+  if (sa.length !== sb.length) return sb.length - sa.length
+  if (sa === sb) return 0
+  return sa > sb ? -1 : 1
+}
+
+/**
  * 发送超时。正常 ack 在 200ms 内回来，8 秒足够宽容；再长用户就会以为界面死了。
  *
  * 为什么必须有这个兜底：`stomp.sendMessage` 返回 true 只代表「帧交给了 WebSocket」，
@@ -549,7 +568,7 @@ export const useChatStore = defineStore('chat', {  state: () => ({
         const ta = a.lastMsgAt ? new Date(a.lastMsgAt).getTime() : 0
         const tb = b.lastMsgAt ? new Date(b.lastMsgAt).getTime() : 0
         if (ta !== tb) return tb - ta
-        return Number(b.sessionId) - Number(a.sessionId)
+        return byIdDesc(a.sessionId, b.sessionId)
       })
     },
 
