@@ -194,7 +194,12 @@ def main():
 
     print(f"""
 清理提示：「开群名 64 个 emoji」这条会真的建一个群，名字以「{EMOJI_PROBE_PREFIX}」开头。
-反复跑本脚本会累积，按下面的 SQL 清掉（不要直接压演示库就跑，压完记得清）：
+反复跑本脚本会累积，按下面的 SQL 清掉（不要直接压演示库就跑，压完记得清）。
+**用 docker exec 执行时务必加 --default-character-set=utf8mb4**，否则容器内 mysql 客户端的
+character_set_client 默认是 latin1，「{EMOJI_PROBE_PREFIX}」这个中文前缀会被按 latin1 解释，
+匹配不上任何行——看起来执行成功，探针群还在：
+
+  SET NAMES utf8mb4;
 
   DELETE i FROM im_inbox i JOIN im_session s ON s.id=i.session_id
     WHERE s.name LIKE '{EMOJI_PROBE_PREFIX}%';

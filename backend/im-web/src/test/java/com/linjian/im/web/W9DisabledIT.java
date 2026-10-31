@@ -1,6 +1,7 @@
 package com.linjian.im.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.linjian.im.chat.service.AdminService;
 import com.linjian.im.chat.service.SessionService;
 import com.linjian.im.security.JwtService;
 import org.junit.jupiter.api.AfterEach;
@@ -41,18 +42,28 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * WebSocket 连接（WS 不走 Servlet 过滤链）。如果只测 REST，会得到一个
  * 「禁用功能正常」的错误结论——实际上被禁用的人只要不断线就能一直发消息。</p>
  *
- * <p>三个断言对应三件事：已连接的人发不出消息、被禁用的 token 连不上、
- * 其他用户完全不受影响（这条是为了防止「修过头」，把所有人都拦掉）。</p>
+ * <p>四个断言对应四件事：已连接的人发不出消息、被禁用的 token 连不上、
+ * 其他用户完全不受影响（这条是为了防止「修过头」，把所有人都拦掉）、
+ * 以及<b>禁用会立刻把已建立的连接断开</b>。</p>
+ *
+ * <p>最后一条是 W9 收尾时补的。原来的设计是「不主动踢线，等他下次发帧时拒绝」，
+ * 理由是「在线连接表是个容易漏记的状态」。这个理由本身没错，但它推出的结论错了：
+ * 代价不是「晚几秒生效」，而是<b>被禁用的人只要不操作就能一直收消息</b>，
+ * 而管理员界面上显示的是「已禁用」。这张表漏记的风险可以用「关不掉就退化成拒绝帧」兜住，
+ * 而「禁用了还在收消息」没有任何兜底。</p>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
 class W9DisabledIT {
 
     private static final List<String> TABLES = List.of(
-            "im_inbox", "im_read_cursor", "im_message", "im_session_member", "im_session", "im_user");
+            "im_inbox", "im_read_cursor", "im_message", "im_session_member", "im_session",
+            "im_admin_log", "im_user");
 
     private static final long USER_A = 4001L;
     private static final long USER_D = 4004L;
+    /** 只作为操作人 ID 传入，不需要在库里存在——服务层只拿它跟目标比「是不是自己」。 */
+    private static final long ADMIN = 9100L;
 
     @LocalServerPort
     private int port;
@@ -64,6 +75,8 @@ class W9DisabledIT {
     private StringRedisTemplate redis;
     @Autowired
     private SessionService sessionService;
+    @Autowired
+    private AdminService adminService;
 
     private WebSocketStompClient client;
     private StompSession sessionA;
@@ -141,6 +154,42 @@ class W9DisabledIT {
         // 反证：同一个应用、同一时刻，正常账号照样连得上
         sessionA = connect(tokenA);
         assertThat(sessionA.isConnected()).isTrue();
+    }
+
+    @Test
+    @Timeout(40)
+    @DisplayName("禁用即刻断开在线连接：不发任何帧，连接也要在几秒内消失")
+    void disablingKicksLiveConnectionWithoutWaitingForNextFrame() throws Exception {
+        long sessionId = sessionService.openSingle(USER_A, USER_D);
+
+        sessionD = connect(tokenD);
+        LinkedBlockingQueue<JsonNode> acks = subscribe(sessionD, "/user/queue/ack");
+        Thread.sleep(400);
+
+        // 先证明这条路本来是通的，否则「断了」可能只是根本没连上
+        sessionD.send("/app/chat.send", Map.of(
+                "sessionId", sessionId, "clientMsgId", "before-kick", "content", "踢线前"));
+        assertThat(acks.poll(10, TimeUnit.SECONDS)).as("踢线前应能正常发送").isNotNull();
+
+        long start = System.nanoTime();
+        // 走真正的禁用入口（AdminService），而不是直接 UPDATE 库：
+        // 踢线是 updateStatus 的一部分，绕过它测不到这条链路。
+        adminService.updateStatus(ADMIN, USER_D, 0);
+
+        // 关键手法：此后一个帧都不发。旧实现「靠下次发帧发现被禁用」在这里必然超时，
+        // 因为客户端没有任何动作。只有主动踢线才能让下面成立。
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (sessionD.isConnected() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+        }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        assertThat(sessionD.isConnected())
+                .as("禁用后连接应被服务端关闭，而不是等到下一次发帧（%d ms 内未断开）", elapsedMs)
+                .isFalse();
+        assertThat(elapsedMs)
+                .as("应远快于心跳周期（10 秒）——慢于此说明是被心跳判死而不是被主动断开")
+                .isLessThan(3_000L);
     }
 
     // ---------------------------------------------------------------- 辅助

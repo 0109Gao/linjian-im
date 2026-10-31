@@ -21,8 +21,24 @@ import { Client } from '@stomp/stompjs'
 
 const RECONNECT_DELAY = 3000
 
+/**
+ * 服务端「终止连接」的标记。
+ *
+ * <p>两个来源：关闭帧的 reason（踢线时由 {@code WebSocketAccountKicker} 写入，
+ * 关闭码 1008 Policy Violation），以及 ERROR 帧 message 头的前缀
+ * （由 {@code AccountStatusChannelInterceptor} 抛出）。两处必须都认，因为它们对应
+ * 两条独立的链路——踢线可能因为会话表对不上而没生效，那时就只剩 ERROR 帧这条线索。</p>
+ *
+ * <p>不带这些标记的断开一律按「网络问题」处理，继续重连。这个区分很关键：
+ * 把网络抖动误判成封禁，会让一次短暂掉线直接把用户踢回登录页。</p>
+ */
+const DISABLED_MARKER = 'ACCOUNT_DISABLED'
+const CLOSE_POLICY_VIOLATION = 1008
+
 let client = null
 let state = 'idle'
+/** 非空表示连接是「被服务端终止」的，重连已被主动停掉，需要用户重新登录。 */
+let fatalReason = null
 
 /** 业务订阅登记表：目的地 → 回调。断线重连后按它重建订阅。 */
 const registry = new Map()
@@ -34,6 +50,7 @@ const messageListeners = new Set()
 const ackListeners = new Set()
 const readListeners = new Set()
 const errorListeners = new Set()
+const fatalListeners = new Set()
 
 function emit(listeners, payload) {
   listeners.forEach((fn) => {
@@ -85,6 +102,22 @@ export function onError(fn) {
   return () => errorListeners.delete(fn)
 }
 
+/**
+ * 订阅「连接被服务端终止」事件。
+ *
+ * <p>与 {@link onError} 分开：onError 是「出错但仍然会重连」，这里是「别重连了，
+ * 再连也不会成功」。混成一个回调，调用方就无法决定要不要停。
+ */
+export function onFatal(fn) {
+  fatalListeners.add(fn)
+  return () => fatalListeners.delete(fn)
+}
+
+/** 当前是否处于「被终止」状态。为真时不应再发起发送或订阅。 */
+export function fatal() {
+  return fatalReason
+}
+
 export function currentState() {
   return state
 }
@@ -98,6 +131,8 @@ export function connect(token) {
     client.deactivate()
     client = null
   }
+  // 重新登录/重连时清掉上一次的致命状态，否则会一直显示「账号已被禁用」
+  fatalReason = null
 
   client = new Client({
     brokerURL: brokerUrl(token),
@@ -122,15 +157,30 @@ export function connect(token) {
 
     onDisconnect: () => setState('idle'),
 
-    onWebSocketClose: () => {
+    onWebSocketClose: (event) => {
       // 清掉本地订阅句柄：重连后旧的句柄已经失效，
       // 不清会让 subscribeNow 误以为「已经订阅过」而跳过重建。
       active.clear()
+
+      // 1008 = Policy Violation：服务端明确终止，不是网络问题。
+      // 这一支必须排在「按 client.active 判断」之前，否则会先被标成 reconnecting，
+      // 界面上出现一个永远转不完的「重连中…」。
+      if (event && event.code === CLOSE_POLICY_VIOLATION) {
+        stopReconnecting(reasonOf(event) || '账号状态已变更，连接被服务端终止')
+        return
+      }
       setState(client && client.active ? 'reconnecting' : 'idle')
     },
 
     onStompError: (frame) => {
-      emit(errorListeners, frame.headers?.message || '实时连接出错')
+      const message = frame?.headers?.message || ''
+      // ERROR 帧是「服务端拒绝这一帧并关闭连接」。如果原因是账号被禁用，
+      // 重连只会得到一模一样的拒绝，必须停下来。
+      if (message.includes(DISABLED_MARKER)) {
+        stopReconnecting('账号已被禁用，请联系管理员')
+        return
+      }
+      emit(errorListeners, message || '实时连接出错')
     }
   })
 
@@ -138,9 +188,55 @@ export function connect(token) {
   client.activate()
 }
 
+/**
+ * 停止重连并告知上层。
+ *
+ * <p>做三件事，顺序不能反：</p>
+ * <ol>
+ *   <li>先把 {@code reconnectDelay} 置 0——stompjs 在 {@code onWebSocketClose} 返回后
+ *       才决定要不要排下一次重连，此时改还来得及。</li>
+ *   <li>再 {@code deactivate()}。放进 setTimeout 是因为这里可能正处在 stompjs 的
+ *       关闭流程里，同步调用 deactivate 会重入同一段代码。</li>
+ *   <li>最后通知上层。先通知的话，界面会在连接对象还没收尾时就渲染出「已断开」，
+ *       紧接着又被 stompjs 的状态回调覆盖一次。</li>
+ * </ol>
+ */
+function stopReconnecting(reason) {
+  if (fatalReason) {
+    return
+  }
+  fatalReason = reason
+  const current = client
+  if (current) {
+    current.reconnectDelay = 0
+    setTimeout(() => {
+      try {
+        current.deactivate()
+      } catch (e) {
+        // 已经断了就无所谓
+      }
+    }, 0)
+  }
+  setState('idle')
+  emit(fatalListeners, reason)
+}
+
+/** 从关闭事件里拼出可读原因。浏览器不保证 reason 有值，没有就返回空串。 */
+function reasonOf(event) {
+  const reason = (event && event.reason) || ''
+  if (reason.includes(DISABLED_MARKER)) {
+    // 服务端关闭帧只写了 ACCOUNT_DISABLED 这个标记，没有附带给人看的中文。
+    // 标记命中就返回固定文案——既不能把标记原样丢给用户，也不能落进通用兜底
+    // （那样「禁用」和「其它终止」就分不清了）。
+    return '账号已被禁用，请联系管理员'
+  }
+  return reason || '账号状态已变更，连接被服务端终止'
+}
+
 export function disconnect() {
   registry.clear()
   active.clear()
+  fatalReason = null
   if (client) {
     client.deactivate()
     client = null

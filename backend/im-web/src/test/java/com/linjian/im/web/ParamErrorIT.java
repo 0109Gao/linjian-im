@@ -45,7 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ParamErrorIT {
 
     private static final List<String> TABLES = List.of(
-            "im_inbox", "im_read_cursor", "im_message", "im_session_member", "im_session", "im_user");
+            "im_inbox", "im_read_cursor", "im_message", "im_session_member", "im_session",
+            "im_admin_log", "im_user");
 
     private static final long USER_A = 1001L;
 

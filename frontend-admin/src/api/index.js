@@ -20,3 +20,6 @@ export const sessionMessages = (sessionId, params) =>
   request.get(`/admin/sessions/${sessionId}/messages`, { params })
 
 export const onlineUsers = () => request.get('/admin/online')
+
+/** 管理员操作日志。action / keyword / page / size 都可选。 */
+export const adminLogs = (params) => request.get('/admin/logs', { params })

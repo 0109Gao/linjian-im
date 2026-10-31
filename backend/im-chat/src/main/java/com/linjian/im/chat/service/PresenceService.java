@@ -63,6 +63,30 @@ public class PresenceService {
     }
 
     /**
+     * 这个人当前的所有连接标识。用于「禁用时立刻断开」——只有拿到 sessionId
+     * 才能找到对应的 WebSocket 会话。
+     *
+     * <p>返回的是 Redis 里记录的快照，可能包含刚刚断开的连接：断开事件与
+     * 管理操作并发时顺序不保证。调用方必须容忍对不存在的会话执行关闭（那是无操作）。</p>
+     */
+    public Set<String> sessionIds(Long userId) {
+        Set<String> members = redis.opsForSet().members(key(userId));
+        return members == null ? Set.of() : members;
+    }
+
+    /**
+     * 直接抹掉这个人的全部在线记录。
+     *
+     * <p>正常断开时由 {@code offline(userId, sessionId)} 逐条移除，不需要这个。它用在
+     * 「因为禁用而被踢下线」这个场景：那边是一次性关闭所有连接，
+     * 与其依赖每条连接各自触发一次断开事件（事件是异步的、可能丢），
+     * 不如直接删键，让「被禁用的人不在在线列表里」成为一个确定的事实。</p>
+     */
+    public void offlineAll(Long userId) {
+        redis.delete(key(userId));
+    }
+
+    /**
      * 批量判断在线，一次 pipeline 拿全部结果。
      *
      * <p>群成员列表要显示每个人的在线状态。逐个 {@link #isOnline} 调用在 200 人群

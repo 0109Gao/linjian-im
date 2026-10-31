@@ -11,6 +11,17 @@
     />
 
     <section class="chat-pane">
+      <!--
+        被服务端终止连接（账号被禁用）时的提示条。
+        放在 chat-pane 最外层而不是「有会话时」的分支里：被踢的那一刻 activeSession
+        可能为空，若挂在里面就永远不显示——用户只会看到一个连不上的空页面。
+      -->
+      <div v-if="chat.fatalMessage" class="fatal-banner">
+        <el-icon><WarningFilled /></el-icon>
+        <span class="fatal-text">{{ chat.fatalMessage }}</span>
+        <el-button size="small" type="danger" plain @click="handleLogout">返回登录</el-button>
+      </div>
+
       <template v-if="activeSession">
         <header class="chat-head">
           <div class="title-wrap">
@@ -324,6 +335,29 @@ async function handleLogout() {
   display: flex;
   flex-direction: column;
   background: #fff;
+}
+
+/*
+ * 致命断线提示条。不要写成 position: fixed 的浮层——那样会盖住输入框，
+ * 而此刻输入框本来就不可用，用户需要看到的是「原因 + 一个出口」。
+ * flex: 0 0 auto 让它占自然高度，下面的消息区自己收缩。
+ */
+.fatal-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: #fef0f0;
+  border-bottom: 1px solid #fbc4c4;
+  color: #c45656;
+  font-size: 13px;
+}
+
+.fatal-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
 }
 
 .chat-head {

@@ -4,21 +4,26 @@ import com.linjian.im.security.HandshakeAuthInterceptor;
 import com.linjian.im.security.StompAuthChannelInterceptor;
 import com.linjian.im.web.ws.AccountStatusChannelInterceptor;
 import com.linjian.im.web.ws.GroupTopicAuthInterceptor;
+import com.linjian.im.web.ws.WebSocketSessionRegistry;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketTransportRegistration;
+import org.springframework.web.socket.handler.WebSocketHandlerDecorator;
+import org.springframework.web.socket.handler.WebSocketHandlerDecoratorFactory;
 
 /**
  * STOMP 端点与消息代理配置。
  *
- * <p>四个关键点：</p>
+ * <p>五个关键点：</p>
  * <ol>
  *   <li>使用 SimpleBroker（内存代理）而非真实 MQ：单机 IM 的推送在进程内完成，
  *       引入 RabbitMQ 只会多一跳网络，收益要等到做多节点广播时才会出现。</li>
@@ -26,6 +31,8 @@ import org.springframework.web.socket.config.annotation.WebSocketTransportRegist
  *   <li>CONNECT 帧的鉴权挂在 inbound 通道最前端，先于任何业务处理。</li>
  *   <li>SUBSCRIBE 帧的群成员校验紧随其后。SimpleBroker 对 {@code /topic} 不做 ACL，
  *       没有这一步，任何登录用户猜到 sessionId 就能收走整个群的消息。</li>
+ *   <li>每条连接建立时把 sessionId → session 登记到 {@code WebSocketSessionRegistry}，
+ *       供「禁用时立刻踢下线」使用。这一条不参与消息收发，只在传输层挂一个装饰器。</li>
  * </ol>
  */
 @Configuration
@@ -37,6 +44,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final StompAuthChannelInterceptor stompAuthChannelInterceptor;
     private final AccountStatusChannelInterceptor accountStatusChannelInterceptor;
     private final GroupTopicAuthInterceptor groupTopicAuthInterceptor;
+    private final WebSocketSessionRegistry sessionRegistry;
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
@@ -78,6 +86,38 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         registration.setMessageSizeLimit(64 * 1024);
         registration.setSendBufferSizeLimit(512 * 1024);
         registration.setSendTimeLimit(10_000);
+        // 会话登记：连接建立时记住句柄，关闭时忘掉。
+        registration.addDecoratorFactory(sessionRecordingFactory());
+    }
+
+    /**
+     * 把每条活连接登记下来，以便管理端能主动断开它。
+     *
+     * <p>挂在传输层的装饰器上，而不是在业务处理器里记——装饰器对所有连接都生效，
+     * 包括那些 CONNECT 帧还没来、{@code SessionConnectedEvent} 还没触发的连接。
+     * 挂在业务层的话，一个「握手成功但迟迟不发 CONNECT」的连接不会被登记，
+     * 而它恰恰是最该被清理的那种。</p>
+     *
+     * <p>移除放在 {@code afterConnectionClosed}，并且不判空：
+     * 断开事件必然对应一条登记（同一 session 只会建立一次），
+     * 重复 remove 对 {@code ConcurrentHashMap} 是幂等的。</p>
+     */
+    @Bean
+    public WebSocketHandlerDecoratorFactory sessionRecordingFactory() {
+        return handler -> new WebSocketHandlerDecorator(handler) {
+
+            @Override
+            public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+                sessionRegistry.add(session.getId(), session);
+                super.afterConnectionEstablished(session);
+            }
+
+            @Override
+            public void afterConnectionClosed(WebSocketSession session, CloseStatus closeStatus) throws Exception {
+                sessionRegistry.remove(session.getId());
+                super.afterConnectionClosed(session, closeStatus);
+            }
+        };
     }
 
     /**

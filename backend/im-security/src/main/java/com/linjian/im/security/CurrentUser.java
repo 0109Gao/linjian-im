@@ -28,4 +28,20 @@ public final class CurrentUser {
         }
         return user.userId();
     }
+
+    /**
+     * 当前登录名。
+     *
+     * <p>给审计日志用：日志里必须直接写下「谁做的」，而不是一个之后还要再关联查询的 ID。
+     * 从 token 里取而不是查库——token 里的 username 就是登录时用的那个，
+     * 而审计要的正是「当时以什么身份操作」。账号改名后旧记录保持旧名字，
+     * 这与 {@code im_admin_log.admin_name} 冗余存储的取舍是同一个理由。</p>
+     */
+    public static String username() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !(authentication.getPrincipal() instanceof JwtUser user)) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED);
+        }
+        return user.username();
+    }
 }

@@ -58,7 +58,8 @@ const menus = [
   { path: '/dashboard', label: '概览', icon: 'DataBoard' },
   { path: '/users', label: '用户管理', icon: 'User' },
   { path: '/sessions', label: '消息审计', icon: 'ChatLineSquare' },
-  { path: '/online', label: '在线监控', icon: 'Connection' }
+  { path: '/online', label: '在线监控', icon: 'Connection' },
+  { path: '/logs', label: '操作日志', icon: 'Tickets' }
 ]
 
 const currentTitle = computed(() => route.meta.title || '')

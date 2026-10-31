@@ -46,7 +46,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class W9AdminIT {
 
     private static final List<String> TABLES = List.of(
-            "im_inbox", "im_read_cursor", "im_message", "im_session_member", "im_session", "im_user");
+            "im_inbox", "im_read_cursor", "im_message", "im_session_member", "im_session",
+            "im_admin_log", "im_user");
 
     private static final long USER_ADMIN = 9001L;
     private static final long USER_ADMIN_2 = 9002L;

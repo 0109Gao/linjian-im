@@ -35,6 +35,12 @@ const routes = [
         name: 'Online',
         component: () => import('@/views/online/index.vue'),
         meta: { title: '在线监控' }
+      },
+      {
+        path: 'logs',
+        name: 'Logs',
+        component: () => import('@/views/log/index.vue'),
+        meta: { title: '操作日志' }
       }
     ]
   },

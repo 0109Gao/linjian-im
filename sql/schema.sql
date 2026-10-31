@@ -136,3 +136,34 @@ CREATE TABLE IF NOT EXISTS `im_read_cursor`
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT ='已读游标';
+
+-- ------------------------------------------------------------
+-- 管理员操作日志。
+-- 消息审计页审的是「聊天内容」，这张表审的是「管理员的动作」——两者不能互相替代：
+-- 出事时要知道的不只是「谁看了这个会话」，还有「谁在什么时候把谁禁用了」。
+--
+-- admin_name 冗余存储而不是关联查 im_user：操作日志的价值在于不可变，
+-- 关联查询会让「账号改名」把这个人的历史操作按新名字重写；
+-- 账号被删则整条记录失去主体。审计表宁可冗余，也不要外键。
+--
+-- ip 用 VARCHAR(45) 是因为 IPv6 文本形式最长 45 字符（含内嵌 IPv4 的形式），
+-- VARCHAR(15) 只够 IPv4，属于典型的「上线三年后才被发现」的类型。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `im_admin_log`
+(
+    `id`          BIGINT       NOT NULL COMMENT '雪花 ID',
+    `admin_id`    BIGINT       NOT NULL COMMENT '操作人 user_id',
+    `admin_name`  VARCHAR(20)  NOT NULL COMMENT '操作人登录名（冗余，改名不影响历史记录）',
+    `action`      VARCHAR(32)  NOT NULL COMMENT 'USER_DISABLE / USER_ENABLE / MSG_AUDIT_VIEW / SEQ_REBUILD',
+    `target_type` VARCHAR(16)  NOT NULL COMMENT 'USER / SESSION / SYSTEM',
+    `target_id`   BIGINT       NULL COMMENT '目标 ID；SYSTEM 类操作没有目标',
+    `detail`      VARCHAR(512) NULL COMMENT '人可读的补充说明',
+    `ip`          VARCHAR(45)  NULL COMMENT '来源 IP',
+    `created_at`  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (`id`),
+    KEY `idx_created_at` (`created_at`),
+    KEY `idx_admin_time` (`admin_id`, `created_at`),
+    KEY `idx_target_time` (`target_type`, `target_id`, `created_at`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT ='管理员操作日志';

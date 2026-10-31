@@ -43,6 +43,8 @@ class AdminServiceTest {
     private ImMessageMapper messageMapper;
     @Mock
     private PresenceService presenceService;
+    @Mock
+    private AccountKicker accountKicker;
 
     @InjectMocks
     private AdminService adminService;
@@ -90,7 +92,7 @@ class AdminServiceTest {
     }
 
     @Test
-    @DisplayName("正常禁用：写库并返回更新后的行，前端可以直接替换该行而不必重查整页")
+    @DisplayName("正常禁用：写库、踢线、返回更新后的行")
     void disableNormalUserWritesAndReturnsRow() {
         ImUser target = user(3L, "alice", 1, 0);
         when(userMapper.selectById(3L)).thenReturn(target);
@@ -99,8 +101,24 @@ class AdminServiceTest {
         var view = adminService.updateStatus(OPERATOR, 3L, 0);
 
         verify(userMapper).updateStatus(3L, 0);
+        // 踢线是禁用的一部分，不是可选优化：漏掉它的表现是「界面显示已禁用，
+        // 那个人还在收消息」，而这种错误不会有任何报错。
+        verify(accountKicker).kick(3L);
         assertThat(view.id()).isEqualTo(3L);
         assertThat(view.status()).isZero();
+    }
+
+    @Test
+    @DisplayName("恢复账号不踢线——那人本来就连不上，没理由掐掉他侥幸活着的连接")
+    void enablingDoesNotKick() {
+        ImUser target = user(4L, "bob", 0, 0);
+        when(userMapper.selectById(4L)).thenReturn(target);
+        when(userMapper.updateStatus(4L, 1)).thenReturn(1);
+
+        adminService.updateStatus(OPERATOR, 4L, 1);
+
+        verify(userMapper).updateStatus(4L, 1);
+        verify(accountKicker, never()).kick(anyLong());
     }
 
     private static ImUser user(long id, String username, int status, int role) {

@@ -29,18 +29,27 @@ import java.security.Principal;
  *   <li>SUBSCRIBE：已连接的人不该继续订阅新会话</li>
  * </ul>
  *
- * <p><b>不做「主动踢线」。</b>禁用时不去遍历在线连接把它断开，而是等它下一次发帧时拒绝。
- * 代价是被禁用的用户可能仍然收得到别人的消息（直到他发帧被发现），换来的是
- * 管理操作不依赖「在线连接表」这个额外状态——那张表一旦漏记一次，就会出现
- * 「禁用了但没踢掉、且怎么都查不出为什么」。</p>
+ * <p><b>它仍然必要，即使已经有了「禁用即踢线」。</b>踢线是主动动作，依赖
+ * Redis 里的在线集合与内存里的会话表；这两者都有可能对不上（进程刚重启、Redis 被清、
+ * 连接在踢线的一瞬间刚好重连）。这道闸是兜底层：只要人还是禁用的，
+ * 下一帧就过不去。两层的关系是「踢线让状态立刻生效，拦截器保证它无法被绕过」。</p>
  *
  * <p>拒绝方式是抛异常，Spring 会回一个 ERROR 帧并关闭会话。这是 STOMP 规范的行为
  * （收到 ERROR 后客户端应断开），不是我们主动断的。</p>
+ *
+ * <p>异常消息里带 {@code ACCOUNT_DISABLED} 这个英文标记，是给前端用的：
+ * 它出现在 ERROR 帧的 {@code message} 头里，前端据此区分「因为被禁用而断开」
+ * 与「网络抖动」——前者必须停止重连并提示，后者应当继续重连。
+ * 不加标记的话，客户端只会看到一句中文提示，然后每 3 秒重连一次、每次都被拒，
+ * 变成一台自己制造的 DDoS。</p>
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class AccountStatusChannelInterceptor implements ChannelInterceptor {
+
+    /** 与 {@code WebSocketAccountKicker} 的关闭理由保持一致，前端只认这一个字符串。 */
+    static final String DISABLED_MARKER = "ACCOUNT_DISABLED";
 
     private final ImUserMapper userMapper;
 
@@ -79,7 +88,7 @@ public class AccountStatusChannelInterceptor implements ChannelInterceptor {
         if (user == null || user.getStatus() == null || user.getStatus() != 1) {
             log.info("拒绝已禁用账号的 STOMP 帧 command={} userId={} sessionId={}",
                     command, userId, accessor.getSessionId());
-            throw new MessagingException("账号已被禁用，连接将被关闭");
+            throw new MessagingException(DISABLED_MARKER + ": 账号已被禁用，连接将被关闭");
         }
         return message;
     }

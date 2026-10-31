@@ -68,7 +68,12 @@ export const useChatStore = defineStore('chat', {  state: () => ({
     /** 已订阅的群主题：目的地 → true。用于 loadSessions 后做增删对比 */
     groupTopics: {},
     /** 上一次连接状态，用于区分「首次连接」和「重连」 */
-    lastConnection: 'idle'
+    lastConnection: 'idle',
+    /**
+     * 非空表示连接是被服务端终止的（账号被禁用），此时已停止重连。
+     * 界面上要显示原因和一个「返回登录」，而不是让它停在「重连中…」。
+     */
+    fatalMessage: ''
   }),
 
   getters: {
@@ -100,6 +105,9 @@ export const useChatStore = defineStore('chat', {  state: () => ({
       stomp.onAck((a) => this.handleAck(a))
       stomp.onRead((e) => this.handleReadEvent(e))
       stomp.onError((msg) => console.warn('[chat] 实时通道错误', msg))
+      // 「被服务端终止」与「网络出错」必须分开处理：前者重连没有意义，
+      // 停不下来就会变成每 3 秒一次的无效重连，直到用户自己关掉页面。
+      stomp.onFatal((reason) => this.handleFatal(reason))
 
       // 会话列表失败不阻断实时通道：能连上 WebSocket、能发消息，
       // 比「整个聊天页因为一次列表请求失败而卡住」有用得多。
@@ -121,6 +129,18 @@ export const useChatStore = defineStore('chat', {  state: () => ({
       if (next === 'connected' && previous === 'reconnecting') {
         this.resyncAfterReconnect()
       }
+    },
+
+    /**
+     * 连接被服务端终止（账号被禁用）。
+     *
+     * <p>只改状态，不自动登出：自动清 token 会让「为什么突然退出登录」变成一个谜，
+     * 而用户此刻最需要的是知道原因。界面上给出原因，由用户点「返回登录」自己走那一步。</p>
+     */
+    handleFatal(reason) {
+      this.fatalMessage = reason || '连接已被服务端终止'
+      this.lastConnection = 'idle'
+      this.connection = 'idle'
     },
 
     /**
@@ -580,6 +600,7 @@ export const useChatStore = defineStore('chat', {  state: () => ({
       this.initialized = false
       this.connection = 'idle'
       this.lastConnection = 'idle'
+      this.fatalMessage = ''
       // 登出时把还在计时的超时全部撤掉：切账号后再触发，会把新账号的消息改错。
       sendTimers.forEach((handle) => clearTimeout(handle))
       sendTimers.clear()

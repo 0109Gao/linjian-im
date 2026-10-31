@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test')
-const { USER_BASE, unique, loginUser } = require('./helpers')
+const { USER_BASE, ADMIN_BASE, unique, loginUser } = require('./helpers')
 
 /**
  * 用户端冒烟：登录 → 连接 → 发消息 → 收实时推送。
@@ -62,6 +62,55 @@ test('发送多行消息：气泡保留换行，状态从「发送中」变为�
   await expect(page.locator('.bubble-row.mine .meta').last()).toHaveText(/#\d+/, {
     timeout: 15_000
   })
+})
+
+test('账号被禁用时连接被立刻断开，界面提示原因并停止重连', async ({ browser, request }) => {
+  const ctx = await browser.newContext()
+  const demo = await ctx.newPage()
+  let demoId = null
+
+  try {
+    await loginUser(demo, 'demo')
+
+    // 用管理员的身份在服务端禁用 demo。走真实 HTTP 而不是直接改库，
+    // 因为要测的是「禁用」这条链路连同踢线一起生效。
+    const loginRes = await request.post('http://localhost:8083/api/auth/login', {
+      data: { username: 'admin', password: '123456' }
+    })
+    const token = (await loginRes.json()).data.accessToken
+    const usersRes = await request.get('http://localhost:8083/api/admin/users?keyword=demo', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    demoId = (await usersRes.json()).data.items[0].id
+    await request.put(`http://localhost:8083/api/admin/users/${demoId}/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: { status: 0 }
+    })
+
+    // 关键断言：不做任何操作，连接也要被服务端主动掐断，并落到致命提示条。
+    // 旧实现「等下次发帧才发现被禁用」在这里会一直转「重连中」，永远不出现提示条。
+    const banner = demo.locator('.fatal-banner')
+    await expect(banner).toBeVisible({ timeout: 5_000 })
+    await expect(banner).toContainText('禁用')
+  } finally {
+    // 自愈：无论断言成败，都把 demo 拉回正常，避免污染后续运行。
+    // demo 的 token 在断开后已失效，重新登录一次拿新 token。
+    const relogin = await request.post('http://localhost:8083/api/auth/login', {
+      data: { username: 'admin', password: '123456' }
+    })
+    const token = (await relogin.json()).data.accessToken
+    if (demoId == null) {
+      const usersRes = await request.get('http://localhost:8083/api/admin/users?keyword=demo', {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      demoId = (await usersRes.json()).data.items[0].id
+    }
+    await request.put(`http://localhost:8083/api/admin/users/${demoId}/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: { status: 1 }
+    })
+    await ctx.close()
+  }
 })
 
 test('对方发来的消息能实时推到未打开的会话，并亮起未读红点', async ({ browser }) => {

@@ -74,4 +74,28 @@ public interface ImMessageMapper extends BaseMapper<ImMessage> {
 
     @Select("SELECT COUNT(*) FROM im_message WHERE created_at >= #{from}")
     long countSince(@Param("from") LocalDateTime from);
+
+    /**
+     * 每个会话当前的「已用到的最大序号」，用于从库里重建 Redis 计数。
+     *
+     * <p>走 {@code uk_session_seq (session_id, seq)} 的松散索引扫描：InnoDB 对
+     * {@code GROUP BY session_id} + {@code MAX(seq)} 可以只跳着读每个会话索引末端，
+     * 不需要回表也不需要排序。会话数为万级时仍是百毫秒内的事，而它只在启动时跑一次。</p>
+     *
+     * <p>没有任何消息的会话不会出现在结果里——它们的计数本来就该从 0 开始，
+     * 缺失即正确。</p>
+     */
+    @Select("""
+            SELECT session_id AS sessionId, MAX(seq) AS maxSeq
+              FROM im_message
+             GROUP BY session_id
+            """)
+    List<SessionSeqRow> maxSeqBySession();
+
+    /** 重建计数的输入行。字段名与别名一一对应，靠 map-underscore-to-camel-case 之外的显式别名映射。 */
+    @lombok.Data
+    class SessionSeqRow {
+        private Long sessionId;
+        private Long maxSeq;
+    }
 }

@@ -51,6 +51,7 @@ public class AdminService {
     private final ImSessionMapper sessionMapper;
     private final ImMessageMapper messageMapper;
     private final PresenceService presenceService;
+    private final AccountKicker accountKicker;
 
     /**
      * 概览指标。
@@ -88,9 +89,17 @@ public class AdminService {
      *       真实系统会做「最后一个管理员保护」，这里直接禁止，规则更简单也更容易解释。</li>
      * </ol>
      *
-     * <p>禁用之后的行为边界（重要）：REST 请求立即被 {@code AccountStatusFilter} 拦下；
-     * 已建立的 WebSocket 在下次发帧时被拒并关闭。不做主动踢线，理由见
-     * {@code AccountStatusChannelInterceptor}。</p>
+     * <p><b>禁用之后的三条生效路径（缺一条这个功能就是半成品）：</b></p>
+     * <ol>
+     *   <li>REST 请求：{@code AccountStatusFilter} 每次请求查一次 status，立即失效。</li>
+     *   <li>已建立的连接：{@link AccountKicker} 立刻断开，见下面的说明。</li>
+     *   <li>后续重连：{@code AccountStatusChannelInterceptor} 在 CONNECT 阶段拒绝。</li>
+     * </ol>
+     *
+     * <p>W9 最初只做了第 1、3 条，靠「下次发帧被拒」实现第 2 条的效果。问题在于
+     * 那要等用户下一次操作：被禁用的人只要不断线，就能继续收到别人的消息，
+     * 而管理员在界面上看到的是「已禁用」。踢线补的就是这一段——
+     * 状态变更与连接断开发生在同一个方法里，不存在「忘了调用」的中间态。</p>
      */
     public AdminUserView updateStatus(long operatorId, Long targetId, int status) {
         if (status != 0 && status != 1) {
@@ -113,6 +122,15 @@ public class AdminService {
         userMapper.updateStatus(targetId, status);
         target.setStatus(status);
         log.info("管理员 {} 将账号 {} 的状态改为 {}", operatorId, targetId, status);
+
+        // 只在禁用时踢线。恢复登录不需要断开——那人此刻本来就连不上，
+        // 就算他还有一条侥幸活着的连接，也没有理由在「恢复」这个动作里把它掐掉。
+        if (status == 0) {
+            int closed = accountKicker.kick(targetId);
+            if (closed > 0) {
+                log.info("账号 {} 已被禁用，同时断开 {} 条在线连接", targetId, closed);
+            }
+        }
         return AdminUserView.of(target);
     }
 

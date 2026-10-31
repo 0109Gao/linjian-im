@@ -102,3 +102,20 @@ test('消息审计：搜到会话并展开该会话的消息', async ({ page }) 
   // 每条都要有服务端 seq，没有说明消息行读出来是残缺的
   await expect(drawer.locator('.msg .seq').first()).toHaveText(/^#\d+$/)
 })
+
+test('操作日志：页面能加载，且前面的禁用/恢复动作都有留痕', async ({ page }) => {
+  await loginAdmin(page)
+  await page.locator('.menu-item', { hasText: '操作日志' }).click()
+  await expect(page.locator('.topbar .crumb')).toHaveText('操作日志')
+
+  // 上一个用例（用户管理回路）刚禁用了又恢复了 demo，这里必须能看到两条对应的记录。
+  // 看不到说明审计写入或查询接口没接上——那正是「功能看起来正常、实际没留痕」的坑。
+  const rows = page.locator('.el-table__row')
+  await expect(rows.first()).toBeVisible()
+
+  // 过滤出「禁用账号」，断言至少有一条目标为 demo 的记录
+  await page.locator('.el-select').click()
+  await page.locator('.el-select-dropdown__item', { hasText: '禁用账号' }).click()
+  await expect(page.locator('.el-table__row').first()).toBeVisible()
+  await expect(page.locator('.el-table__row', { hasText: 'USER' }).first()).toContainText('demo')
+})
