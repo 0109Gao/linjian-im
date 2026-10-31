@@ -1,0 +1,35 @@
+# ---- Java / Maven ----
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+*.log
+
+# ---- 前端 ----
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+*.swp
+.DS_Store
+
+# ---- 本地环境变量（含 JWT 密钥，绝不入库）----
+.env
+.env.local
+*.env
+
+# ---- 压测与测试产物 ----
+docs/jmeter/*.jtl
+docs/jmeter/report/
+*.jfr
+
+# ---- 交付包（体积大，走网盘 / Releases）----
+release/*.tar
+release/*.tar.gz
