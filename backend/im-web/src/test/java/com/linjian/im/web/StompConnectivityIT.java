@@ -11,6 +11,8 @@ import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.messaging.converter.MappingJackson2MessageConverter;
 import org.springframework.messaging.simp.stomp.StompFrameHandler;
 import org.springframework.messaging.simp.stomp.StompHeaders;
@@ -32,24 +34,29 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * W6 的双向连通验收：走真实的 WebSocket + STOMP 协议栈，但刻意不连 MySQL 与 Redis。
+ * W6 的双向连通验收：走真实的 WebSocket + STOMP 协议栈。
  *
  * <p>token 由 {@link JwtService} 直接签发，跳过登录接口——这样红灯的含义是唯一的：
  * 连接层或鉴权层出了问题，而不是「容器没起来」或「库表没初始化」。</p>
  *
- * <p>为什么不连中间件：W6 的验收对象是连接层。把中间件排除在外，
- * 失败归因才不需要先做三次排除法。端到端（登录→拿 token→聊天）留到 W7 落库时再做。</p>
+ * <p>关于数据库：本测试不验证任何落库逻辑，但 W9 引入的 {@code AccountStatusChannelInterceptor}
+ * 会在 CONNECT 帧阶段查 {@code im_user} 校验账号状态（被禁用 / 不存在直接关连接）。
+ * 因此尽管初衷是「不依赖中间件」，这里仍须在测试库里种入被测账号这一行，否则会被误判为禁用而连接被拒。
+ * 种入的是最小可用行，密码哈希是占位符——本测试不验证登录，只验证连接层与鉴权层。</p>
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "im.jwt.secret=test-only-im-jwt-secret-for-integration-0123456789abcdefghijk",
                 "im.jwt.expire-hours=24",
-                // 本测试不需要数据库；把连接超时压到 1 秒，避免上下文启动阶段被 Hikari 拖住。
+                // 仍保留较短的 Hikari 连接超时，避免上下文启动阶段被数据库拖住。
                 "spring.datasource.hikari.connection-timeout=1000"
         })
+@ActiveProfiles("test")
 class StompConnectivityIT {
 
+    /** 被测账号：token 与 CONNECT 鉴权都围绕这个 ID 展开，必须在测试库中存在且状态正常。 */
+    private static final long TEST_USER_ID = 109859320094527488L;
     private static final String SECRET_IN_TEST = "test-only-im-jwt-secret-for-integration-0123456789abcdefghijk";
     private static final String OTHER_SECRET = "forged-secret-not-the-server-one-0123456789abcdefghijklmn";
 
@@ -59,11 +66,19 @@ class StompConnectivityIT {
     @Autowired
     private JwtService jwtService;
 
+    @Autowired
+    private JdbcTemplate jdbc;
+
     private WebSocketStompClient client;
     private StompSession session;
 
     @BeforeEach
     void setUp() {
+        // W9 的 AccountStatusChannelInterceptor 在 CONNECT 阶段查 im_user，
+        // 被测账号必须存在且状态正常，否则会被当成「不存在 / 禁用」直接关连接。
+        jdbc.update("INSERT IGNORE INTO im_user (id, username, password_hash, nickname, status) VALUES (?, ?, ?, ?, 1)",
+                TEST_USER_ID, "linjian",
+                "$2a$10$placeholderhashnotusedinthesetests0000000000000000000000", "林间");
         client = new WebSocketStompClient(new StandardWebSocketClient());
         client.setMessageConverter(new MappingJackson2MessageConverter());
     }
@@ -92,7 +107,7 @@ class StompConnectivityIT {
     @DisplayName("情形一：合法 token 连接成功，ping 收到回显且回显里的 userId 与 token 一致")
     @Timeout(30)
     void validToken_receivesPongWithOwnUserId() throws Exception {
-        long expectedUserId = 109859320094527488L;
+        long expectedUserId = TEST_USER_ID;
         String token = jwtService.issue(expectedUserId, "linjian");
 
         session = client.connectAsync(url(token), new WebSocketHttpHeaders(), connectHeaders(token),
@@ -143,7 +158,7 @@ class StompConnectivityIT {
     @DisplayName("情形三：握手用合法 token，但 CONNECT 用伪造 token —— 仍被拒绝")
     @Timeout(30)
     void forgedTokenAtConnect_rejectedEvenIfHandshakePassed() {
-        String valid = jwtService.issue(109859320094527488L, "linjian");
+        String valid = jwtService.issue(TEST_USER_ID, "linjian");
         String forged = Jwts.builder()
                 .subject("109859320094527488")
                 .claim("username", "linjian")
@@ -178,7 +193,7 @@ class StompConnectivityIT {
     @DisplayName("情形四：连接保持 32 秒后心跳未断，仍可正常收发")
     @Timeout(60)
     void heartbeat_keepsConnectionAliveBeyondThirtySeconds() throws Exception {
-        String token = jwtService.issue(109859320094527488L, "linjian");
+        String token = jwtService.issue(TEST_USER_ID, "linjian");
         session = client.connectAsync(url(token), new WebSocketHttpHeaders(), connectHeaders(token),
                 new StompSessionHandlerAdapter() {
                 }).get(10, TimeUnit.SECONDS);
